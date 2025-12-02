@@ -161,22 +161,6 @@ local function FindCloseMob(range)
     return closest
 end
 
--- Helper to find Pickaxe (handles names like "Copper Pickaxe")
-local function GetPickaxe(char)
-    -- Check held tool
-    local held = char:FindFirstChildWhichIsA("Tool")
-    if held and held.Name:find("Pickaxe") then return held end
-    
-    -- Check backpack
-    local backpack = LocalPlayer.Backpack
-    for _, tool in ipairs(backpack:GetChildren()) do
-        if tool:IsA("Tool") and tool.Name:find("Pickaxe") then
-            return tool
-        end
-    end
-    return nil
-end
-
 local function InitializeAutoMine()
     ScriptAPI.GetRockTypes = function()
         local rockTypes = {}
@@ -207,53 +191,40 @@ local function InitializeAutoMine()
         local char = LocalPlayer.Character
         if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
         local root = char.HumanoidRootPart
-        
+        local closestRock = nil
+        local bestDist = maxDist or 15
         local rocksFolder = Workspace:FindFirstChild("Rocks")
         if not rocksFolder then return nil end
-
-        local bestPriorityRock = nil
-        local bestPriorityDist = maxDist
-        
-        local bestNormalRock = nil
-        local bestNormalDist = maxDist
 
         for _, descendant in ipairs(rocksFolder:GetDescendants()) do
             if descendant.Name == "Hitbox" and descendant:IsA("BasePart") and descendant.Parent then
                 local rockName = descendant.Parent.Name
+                local dist = (descendant.Position - root.Position).Magnitude
                 
-                -- Optimization: Skip calculation if we don't care about this rock
-                local isPriority = (Config.PriorityOre and Config.PriorityOre ~= "None" and rockName == Config.PriorityOre)
-                local isTarget = Config.MineTargets[rockName]
-                
-                if isPriority or isTarget then
-                    local dist = (descendant.Position - root.Position).Magnitude
-                    
-                    local isValid = true
-                    local infoFrame = descendant.Parent:FindFirstChild("infoFrame")
-                    local hpText = infoFrame and infoFrame:FindFirstChild("Frame") and infoFrame.Frame:FindFirstChild("rockHP") and infoFrame.Frame.rockHP.Text
-                    if hpText then
-                        local hp = tonumber(hpText:match("^(%d+)"))
-                        if not hp or hp <= 0 then isValid = false end
-                    end
+                local isValid = true
+                local infoFrame = descendant.Parent:FindFirstChild("infoFrame")
+                local hpText = infoFrame and infoFrame:FindFirstChild("Frame") and infoFrame.Frame:FindFirstChild("rockHP") and infoFrame.Frame.rockHP.Text
+                if hpText then
+                    local hp = tonumber(hpText:match("^(%d+)"))
+                    if not hp or hp <= 0 then isValid = false end
+                end
 
-                    if isValid then
-                        if isPriority then
-                            if dist < bestPriorityDist then
-                                bestPriorityRock = descendant
-                                bestPriorityDist = dist
-                            end
-                        elseif isTarget then
-                            if dist < bestNormalDist then
-                                bestNormalRock = descendant
-                                bestNormalDist = dist
-                            end
+                if isValid then
+                    if Config.PriorityOre and Config.PriorityOre ~= "None" and rockName == Config.PriorityOre then
+                        local bestPriorityDist = maxDist 
+                        if dist < bestPriorityDist then
+                            return descendant 
+                        end
+                    elseif Config.MineTargets[rockName] then
+                        if dist < bestDist then
+                            closestRock = descendant
+                            bestDist = dist
                         end
                     end
                 end
             end
         end
-        
-        return bestPriorityRock or bestNormalRock
+        return closestRock
     end
 
     task.spawn(function()
@@ -265,7 +236,6 @@ local function InitializeAutoMine()
             
             if Config.AutoMine and Remotes.ToolActivated and root and humanoid then
                 
-                -- Check for mobs if FightCloseMobs is ON
                 if Config.FightCloseMobs then
                     local closeMob = FindCloseMob(15)
                     if closeMob then
@@ -278,16 +248,16 @@ local function InitializeAutoMine()
                     end
                 end
 
-                -- If NOT fighting, do Mining
                 if not ActiveTargets.Combat then
-                    local pickaxe = GetPickaxe(char)
-                    
-                    -- Equip Pickaxe
-                    if pickaxe and pickaxe.Parent ~= char then
-                        humanoid:EquipTool(pickaxe)
+                    local pickaxe = char:FindFirstChild("Pickaxe")
+                    if not pickaxe then
+                        local backpackPick = LocalPlayer.Backpack:FindFirstChild("Pickaxe")
+                        if backpackPick then
+                            humanoid:EquipTool(backpackPick)
+                            pickaxe = backpackPick
+                        end
                     end
 
-                    -- Validate current target
                     local targetValid = false
                     if ActiveTargets.Mining and ActiveTargets.Mining.Parent then
                          local rName = ActiveTargets.Mining.Parent.Name
@@ -297,27 +267,16 @@ local function InitializeAutoMine()
                              if hpText then
                                 local hp = tonumber(hpText:match("^(%d+)"))
                                 if hp and hp > 0 then targetValid = true end
-                             else 
-                                 targetValid = true 
-                             end
+                             else targetValid = true end
                          end
                     end
                     
-                    if not targetValid then 
-                        ActiveTargets.Mining = nil 
-                    end
-                    
-                    -- Find new target if needed
-                    if not ActiveTargets.Mining then 
-                        ActiveTargets.Mining = FindNearestRock(500) 
-                    end
+                    if not targetValid then ActiveTargets.Mining = nil end
+                    if not ActiveTargets.Mining then ActiveTargets.Mining = FindNearestRock(500) end
 
-                    -- Mining Action
                     if pickaxe and ActiveTargets.Mining and humanoid.Health > 0 and ActiveTargets.Mining.Parent then
                          local dist = (root.Position - ActiveTargets.Mining.Position).Magnitude
-                         if dist <= 20 then 
-                             Remotes.ToolActivated:InvokeServer("Pickaxe") 
-                         end
+                         if dist <= 20 then Remotes.ToolActivated:InvokeServer("Pickaxe") end
                     end
                 end
             else
@@ -336,7 +295,7 @@ local function InitializeAutoMine()
             root.AssemblyAngularVelocity = Vector3.zero
             
             local targetPos = ActiveTargets.Mining.Position
-            -- Position 5 studs down, looking UP
+            -- Position 5 studs down
             local miningPos = targetPos - Vector3.new(0, 5, 0)
             local targetCFrame = CFrame.lookAt(miningPos, targetPos)
             
@@ -897,9 +856,16 @@ local SeenSellItems = {}
 
 task.spawn(function()
     while true do
+        -- Use Workspace Rocks (All Items) + Inventory to ensure all possibilities are shown
+        local allRocks = ScriptAPI.GetRockTypes and ScriptAPI.GetRockTypes() or {}
         local inventory = ScriptAPI.GetAvailableOres and ScriptAPI.GetAvailableOres() or {}
+        
+        local masterList = {}
+        for _, v in ipairs(allRocks) do masterList[v] = true end
+        for k, _ in pairs(inventory) do masterList[k] = true end
+        
         local sortedItems = {}
-        for k in pairs(inventory) do table.insert(sortedItems, k) end
+        for k in pairs(masterList) do table.insert(sortedItems, k) end
         table.sort(sortedItems)
 
         for _, oreName in ipairs(sortedItems) do
