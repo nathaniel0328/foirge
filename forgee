@@ -106,7 +106,7 @@ local Config = {
 local ScriptAPI = {}
 local ActiveTargets = { Mining = nil, Combat = nil }
 local IsTweening = false
-local TWEEN_SPEED = 70 
+local TWEEN_SPEED = 60 
 local LastLocationCFrame = nil 
 local ReturnButton = nil
 
@@ -796,3 +796,4 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Script Loaded Successfully!")
 Rayfield:LoadConfiguration()
+
