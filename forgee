@@ -8,7 +8,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local VirtualUser = game:GetService("VirtualUser") -- Added for Anti-AFK
+local VirtualUser = game:GetService("VirtualUser") 
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -114,6 +114,7 @@ local CurrentTweenTrack = nil
 
 -- New Global for V2 Delay Logic
 local IsV2FarmingReady = false
+local V2SessionID = 0 -- Added to prevent toggle race conditions
 
 --------------------------------------------------------------------------------
 -- CORE FUNCTIONS
@@ -367,7 +368,7 @@ end
 -- AUTO FARM V2 (DELAYED START + STICKY LOCK + TOP POSITION)
 -- ═══════════════════════════════════════════════════════════════════════════
 local function InitializeAutoFarmV2()
-    local RESET_INTERVAL = 3 
+    local RESET_INTERVAL = 4 
     local CurrentV2Target = nil
     
     local function FindAnyTargetV2()
@@ -452,7 +453,7 @@ local function InitializeAutoFarmV2()
             if target and target:FindFirstChild("HumanoidRootPart") then
                 -- UPDATED: Teleport ABOVE the mob (9 studs)
                 local targetPos = target.HumanoidRootPart.Position
-                local abovePos = targetPos + Vector3.new(0, 8.5, 0)
+                local abovePos = targetPos + Vector3.new(0, 7.5, 0)
                 
                 root.CFrame = CFrame.new(abovePos) * CFrame.lookAt(abovePos, targetPos).Rotation
 
@@ -864,7 +865,9 @@ CombatTab:CreateToggle({
     Flag = "AutoFarmV2", 
     Callback = function(v) 
         Config.AutoFarmV2 = v 
-        IsV2FarmingReady = false -- Lock farming initially
+        IsV2FarmingReady = false 
+        V2SessionID = V2SessionID + 1 -- Increment session to invalidate old waits
+        local currentSession = V2SessionID
 
         if v then
             -- 1. Trigger First Reset Immediately
@@ -878,7 +881,8 @@ CombatTab:CreateToggle({
             -- 2. Wait 5.3 Seconds before starting the farm loop
             task.spawn(function()
                 task.wait(5.3)
-                if Config.AutoFarmV2 then -- Check if user didn't disable it during wait
+                -- Only enable if user hasn't toggled off/on again in the meantime
+                if Config.AutoFarmV2 and V2SessionID == currentSession then 
                     print("[Auto Farm V2] 5.3s Delay over. Starting loops.")
                     IsV2FarmingReady = true
                 end
@@ -949,4 +953,3 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Script Loaded Successfully!")
 Rayfield:LoadConfiguration()
-
