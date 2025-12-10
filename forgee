@@ -452,7 +452,7 @@ local function InitializeAutoFarmV2()
             if target and target:FindFirstChild("HumanoidRootPart") then
                 -- UPDATED: Teleport ABOVE the mob (9 studs)
                 local targetPos = target.HumanoidRootPart.Position
-                local abovePos = targetPos + Vector3.new(0, 9, 0)
+                local abovePos = targetPos + Vector3.new(0, 8.5, 0)
                 
                 root.CFrame = CFrame.new(abovePos) * CFrame.lookAt(abovePos, targetPos).Rotation
 
@@ -949,3 +949,4 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Script Loaded Successfully!")
 Rayfield:LoadConfiguration()
+
