@@ -1,4 +1,4 @@
-print("[The Forge] Script Starting (Zone Update)...")
+print("[The Forge] Script Starting (Zone Update + V2 Top + AFK)...")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,6 +8,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualUser = game:GetService("VirtualUser") -- Added for Anti-AFK
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -58,6 +59,7 @@ local Remotes = {
     ChangeSequence = GetServiceRemote("ForgeService", "RF", "ChangeSequence"),
     StartForge = GetServiceRemote("ForgeService", "RF", "StartForge"),
     Forge = GetServiceRemote("ProximityService", "RF", "Forge"),
+    Reset = GetServiceRemote("CharacterService", "RF", "Reset") 
 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -100,25 +102,18 @@ local Config = {
     SelectedOre = "Iron",
     ForgeQty = 1,
     SelectedSellItems = {},
-    SelectedZones = {} -- NEW: Stores the folders we want to mine in
+    SelectedZones = {},
+    AutoFarmV2 = false
 }
 
 local ScriptAPI = {}
 local ActiveTargets = { Mining = nil, Combat = nil }
 local IsTweening = false
-local TWEEN_SPEED = 60 
-local LastLocationCFrame = nil 
-local ReturnButton = nil
-
--- --- AVOIDANCE VARIABLES ---
-local GoblinCavePart = nil
+local TWEEN_SPEED = 70 
 local CurrentTweenTrack = nil 
 
-task.spawn(function()
-    local success, _ = pcall(function()
-        GoblinCavePart = Workspace:WaitForChild("Debris", 10):WaitForChild("Regions", 10):WaitForChild("Goblin Cave", 10)
-    end)
-end)
+-- New Global for V2 Delay Logic
+local IsV2FarmingReady = false
 
 --------------------------------------------------------------------------------
 -- CORE FUNCTIONS
@@ -152,7 +147,7 @@ end
 local function InitializeNoclip()
     LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
     RunService.Stepped:Connect(function()
-        if Config.AutoMine or Config.AutoAttack or Config.FightCloseMobs or IsTweening then
+        if Config.AutoMine or Config.AutoAttack or Config.FightCloseMobs or IsTweening or Config.AutoFarmV2 then
             local char = LocalPlayer.Character
             if char then
                 for _, part in ipairs(char:GetDescendants()) do
@@ -198,7 +193,6 @@ end
 -- AUTO MINE
 -- ═══════════════════════════════════════════════════════════════════════════
 local function InitializeAutoMine()
-    -- Get List of Ores
     ScriptAPI.GetRockTypes = function()
         local rockTypes = {}
         local seen = {}
@@ -222,7 +216,6 @@ local function InitializeAutoMine()
         return rockTypes
     end
     
-    -- NEW: Get List of Zones (Folders in Rocks)
     ScriptAPI.GetZoneNames = function()
         local zones = {}
         local rocksFolder = Workspace:FindFirstChild("Rocks")
@@ -245,17 +238,14 @@ local function InitializeAutoMine()
         local rocksFolder = Workspace:FindFirstChild("Rocks")
         if not rocksFolder then return nil end
         
-        -- Determine where to look
         local foldersToScan = {}
         
         if Config.SelectedZones and #Config.SelectedZones > 0 then
-            -- Only scan selected zones
             for _, zoneName in ipairs(Config.SelectedZones) do
                 local z = rocksFolder:FindFirstChild(zoneName)
                 if z then table.insert(foldersToScan, z) end
             end
         else
-            -- Scan everything (Default)
             table.insert(foldersToScan, rocksFolder)
         end
         
@@ -280,7 +270,6 @@ local function InitializeAutoMine()
 
                     if isValid and Config.AvoidOccupied and maxHP > 0 and currentHP < maxHP then isValid = false end
                     
-                    -- Only apply AvoidGoblinCave if we aren't specifically targeting it via Zones
                     if isValid and Config.AvoidGoblinCave and (#Config.SelectedZones == 0) and goblinCaveFolder and descendant:IsDescendantOf(goblinCaveFolder) then 
                         isValid = false 
                     end
@@ -375,7 +364,117 @@ local function InitializeAutoMine()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- COMBAT
+-- AUTO FARM V2 (DELAYED START + STICKY LOCK + TOP POSITION)
+-- ═══════════════════════════════════════════════════════════════════════════
+local function InitializeAutoFarmV2()
+    local RESET_INTERVAL = 3 
+    local CurrentV2Target = nil
+    
+    local function FindAnyTargetV2()
+        local living = Workspace:FindFirstChild("Living")
+        if not living then return nil end
+        
+        local closest, bestDist = nil, 9999
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+
+        for _, mob in ipairs(living:GetChildren()) do
+            if mob:IsA("Model") and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 and mob:FindFirstChild("HumanoidRootPart") 
+            and not mob:FindFirstChild("RaceFolder") 
+            and not Players:GetPlayerFromCharacter(mob) then
+                local cleanName = mob.Name:gsub("%d+$", "")
+                local shouldAttack = true
+                
+                local hasTargets = false
+                for k, v in pairs(Config.AttackTargets) do if v then hasTargets = true break end end
+                
+                if hasTargets and not Config.AttackTargets[cleanName] then
+                    shouldAttack = false
+                end
+
+                if shouldAttack then
+                    local d = (mob.HumanoidRootPart.Position - root.Position).Magnitude
+                    if d < bestDist then bestDist = d; closest = mob end
+                end
+            end
+        end
+        return closest
+    end
+
+    -- 1. Reset Loop (Waits for IsV2FarmingReady)
+    task.spawn(function()
+        while true do
+            if Config.AutoFarmV2 and IsV2FarmingReady then
+                pcall(function()
+                    if Remotes.Reset then
+                        print("[Auto Farm V2] Loop Reset")
+                        Remotes.Reset:InvokeServer()
+                    end
+                end)
+                task.wait(RESET_INTERVAL)
+            else
+                task.wait(0.5)
+            end
+        end
+    end)
+
+    -- 2. Lock & Kill Loop (Heartbeat) - STICKY TARGET LOGIC
+    RunService.Heartbeat:Connect(function()
+        if not Config.AutoFarmV2 or not IsV2FarmingReady then 
+            CurrentV2Target = nil -- Reset target when disabled
+            return 
+        end
+
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char and char:FindFirstChild("Humanoid")
+
+        if root and humanoid then 
+            
+            -- A. Validate Current Target (Stickiness)
+            if CurrentV2Target then
+                if not CurrentV2Target.Parent 
+                or not CurrentV2Target:FindFirstChild("Humanoid") 
+                or CurrentV2Target.Humanoid.Health <= 0 
+                or not CurrentV2Target:FindFirstChild("HumanoidRootPart") then
+                    CurrentV2Target = nil -- Target died or invalidated
+                end
+            end
+
+            -- B. Find New Target if None
+            if not CurrentV2Target then
+                CurrentV2Target = FindAnyTargetV2()
+            end
+            
+            local target = CurrentV2Target
+
+            if target and target:FindFirstChild("HumanoidRootPart") then
+                -- UPDATED: Teleport ABOVE the mob (9 studs)
+                local targetPos = target.HumanoidRootPart.Position
+                local abovePos = targetPos + Vector3.new(0, 9, 0)
+                
+                root.CFrame = CFrame.new(abovePos) * CFrame.lookAt(abovePos, targetPos).Rotation
+
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+
+                local weapon = char:FindFirstChildWhichIsA("Tool")
+                if not weapon then
+                    local bpWeapon = LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool") 
+                    if bpWeapon then humanoid:EquipTool(bpWeapon); weapon = bpWeapon end
+                end
+                
+                if Remotes.ToolActivated then
+                    Remotes.ToolActivated:InvokeServer("Weapon")
+                end
+            end
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- STANDARD COMBAT
 -- ═══════════════════════════════════════════════════════════════════════════
 local function InitializeCombat()
     local isBlocking = false
@@ -423,6 +522,12 @@ local function InitializeCombat()
     task.spawn(function()
         while true do
             task.wait(0.05) 
+            -- Skip standard combat if V2 is on
+            if Config.AutoFarmV2 then 
+                task.wait(0.5)
+                continue 
+            end
+
             local char = LocalPlayer.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local shouldRunCombat = (Config.AutoAttack or (Config.FightCloseMobs and ActiveTargets.Combat))
@@ -470,6 +575,9 @@ local function InitializeCombat()
     end)
 
     RunService.Heartbeat:Connect(function(dt)
+        -- Disable standard combat movement if V2 is on
+        if Config.AutoFarmV2 then return end
+
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         local shouldMove = (Config.AutoAttack or Config.FightCloseMobs)
@@ -662,10 +770,26 @@ local function RedeemAllCodes()
     end
 end
 
+-- -----------------------------------------------------------------------------
+-- ANTI-AFK (ALWAYS ENABLED)
+-- -----------------------------------------------------------------------------
+pcall(function()
+    if LocalPlayer then
+        LocalPlayer.Idled:Connect(function()
+            if VirtualUser then
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+                print("✅ Anti-AFK: Prevented idle kick")
+            end
+        end)
+    end
+end)
+
 InitializeNoclip()
 InitializeAutoMine()
 InitializeAutoRun()
 InitializeCombat()
+InitializeAutoFarmV2() -- INITIALIZE V2
 InitializeForgeAndSell()
 InitializeMovement()
 
@@ -698,14 +822,11 @@ local ZoneDropdown = FarmingTab:CreateDropdown({
     Flag = "MiningZones",
     Callback = function(options)
         Config.SelectedZones = options
-        -- Warn user if selections are made but script acts weird
         if #options > 0 then
-            -- Optional: Add notification here
         end
     end
 })
 
--- Load Zones Dynamically
 task.spawn(function()
     while not ScriptAPI.GetZoneNames do task.wait(0.5) end
     local zones = ScriptAPI.GetZoneNames()
@@ -736,7 +857,39 @@ task.spawn(function()
     end
 end)
 
-CombatTab:CreateSection("Settings")
+CombatTab:CreateSection("Auto Farm V2")
+CombatTab:CreateToggle({
+    Name = "Auto Farm V2 (Reset + TP Lock)", 
+    CurrentValue = false, 
+    Flag = "AutoFarmV2", 
+    Callback = function(v) 
+        Config.AutoFarmV2 = v 
+        IsV2FarmingReady = false -- Lock farming initially
+
+        if v then
+            -- 1. Trigger First Reset Immediately
+            if Remotes.Reset then 
+                pcall(function() 
+                    print("[Auto Farm V2] Initial Reset triggered")
+                    Remotes.Reset:InvokeServer() 
+                end)
+            end
+
+            -- 2. Wait 5.3 Seconds before starting the farm loop
+            task.spawn(function()
+                task.wait(5.3)
+                if Config.AutoFarmV2 then -- Check if user didn't disable it during wait
+                    print("[Auto Farm V2] 5.3s Delay over. Starting loops.")
+                    IsV2FarmingReady = true
+                end
+            end)
+        else
+            IsV2FarmingReady = false
+        end
+    end
+})
+
+CombatTab:CreateSection("Standard Combat")
 CombatTab:CreateToggle({Name = "Auto Attack", CurrentValue = false, Flag = "AutoAttack", Callback = function(v) Config.AutoAttack = v end})
 CombatTab:CreateToggle({Name = "Auto Block", CurrentValue = false, Flag = "AutoBlock", Callback = function(v) Config.AutoParry = v end})
 CombatTab:CreateSection("Targets")
@@ -796,4 +949,3 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Script Loaded Successfully!")
 Rayfield:LoadConfiguration()
-
