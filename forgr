@@ -1,6 +1,6 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE FORGE: COMPLETE EDITION (Updated)
--- Features: Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
+-- Features: Multi-Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
@@ -26,7 +26,7 @@ local Config = {
     AutoMine = false,
     SpinMining = false,
     MineTargets = {}, 
-    PriorityOre = "None",
+    PriorityList = {}, -- New Ordered List for Priority
     BreakNonPriority = false, 
     OreFilterEnabled = false,
     SelectedOres = {}, 
@@ -37,7 +37,7 @@ local Config = {
     -- LAVA
     LavaDistanceSafe = 8,
     LavaDistanceUnsafe = 6,
-    SpamLava = false, -- New Config for Lava Spam
+    SpamLava = false, 
     
     -- COMBAT
     AutoFarmV2 = false,
@@ -67,7 +67,7 @@ local AvailableOresList = {
     "Crimson Crystal", "Blue Crystal", "Orange Crystal", "Green Crystal", "Obsidian", 
     "Emerald", "Ruby", "Rivalite", "Uranium", "Mythril", "Eye Ore", "Fireite", 
     "Magmaite", "Lightite", "Rainbow Crystal", "Demonite", "Darkryte", "Arcane Crystal",
-    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum", "Suryafal", "Etherealite", "Galestor", "Malachite", "Cryptex", "Crimsonite", "Aqujade", "Iceite", "Voidstar", "Gargantuan"
+    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum"
 }
 table.sort(AvailableOresList)
 
@@ -325,12 +325,10 @@ local function InitializeAutoMine()
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then return nil end
         
-        local closestPriority, bestPriorityDist = nil, math.huge
-        local closestNormal, bestNormalDist = nil, math.huge
-        
         local rocksFolder = Workspace:FindFirstChild("Rocks")
         if not rocksFolder then return nil end
         
+        -- Prepare list of folders to scan
         local foldersToScan = {}
         if Config.SelectedZones and #Config.SelectedZones > 0 then
             for _, zoneName in ipairs(Config.SelectedZones) do
@@ -342,7 +340,51 @@ local function InitializeAutoMine()
         end
         
         local goblinCaveFolder = rocksFolder:FindFirstChild("Island2GoblinCave")
+        
+        -- Priority Search: Check strictly in order (1st, 2nd, 3rd...)
+        if #Config.PriorityList > 0 then
+            for pIndex, priorityName in ipairs(Config.PriorityList) do
+                local bestP, bestDist = nil, math.huge
+                
+                for _, scanRoot in ipairs(foldersToScan) do
+                    for _, descendant in ipairs(scanRoot:GetDescendants()) do
+                        if descendant.Name == "Hitbox" and descendant:IsA("BasePart") and descendant.Parent then
+                            if descendant.Parent.Name == priorityName then
+                                if IgnoredRocks[descendant] and (tick() - IgnoredRocks[descendant] < 5) then continue end
+                                
+                                local rockModel = descendant.Parent
+                                local dist = (descendant.Position - root.Position).Magnitude
+                                local isValid = true
+                                
+                                if IsOreOccupied(descendant) then isValid = false end
+                                
+                                local infoFrame = rockModel:FindFirstChild("infoFrame")
+                                local hpText = infoFrame and infoFrame:FindFirstChild("Frame") and infoFrame.Frame:FindFirstChild("rockHP") and infoFrame.Frame.rockHP.Text
+                                if hpText then
+                                    local c = hpText:match("^(%d+)")
+                                    if tonumber(c) and tonumber(c) <= 0 then isValid = false end
+                                end
+                                
+                                if isValid and Config.AvoidGoblinCave and (#Config.SelectedZones == 0) and goblinCaveFolder and descendant:IsDescendantOf(goblinCaveFolder) then 
+                                    isValid = false 
+                                end
+                                
+                                if isValid and dist < bestDist then
+                                    bestP = descendant
+                                    bestDist = dist
+                                end
+                            end
+                        end
+                    end
+                end
+                
+                if bestP then return bestP end -- Found highest priority, return immediately
+            end
+        end
 
+        -- If no priority found (or none set), fallback to Targets/Filler
+        local closestNormal, bestNormalDist = nil, math.huge
+        
         for _, scanRoot in ipairs(foldersToScan) do
             for _, descendant in ipairs(scanRoot:GetDescendants()) do
                 if descendant.Name == "Hitbox" and descendant:IsA("BasePart") and descendant.Parent then
@@ -367,18 +409,11 @@ local function InitializeAutoMine()
                     end
 
                     if isValid then
-                        -- 1. Check Priority (Name Match)
-                        if Config.PriorityOre ~= "None" and rockName == Config.PriorityOre then
-                            if dist < bestPriorityDist then
-                                closestPriority = descendant
-                                bestPriorityDist = dist
-                            end
-                        end
-                        
-                        -- 2. Check Targets / Filler
                         local isTarget = Config.MineTargets[rockName]
                         local isBreakNonPriority = Config.BreakNonPriority 
                         
+                        -- Exclude active Priorities from "BreakNonPriority" check to avoid re-checking them messily, 
+                        -- though logic handles it.
                         if isTarget or isBreakNonPriority then
                             if dist < bestNormalDist then
                                 closestNormal = descendant
@@ -389,7 +424,7 @@ local function InitializeAutoMine()
                 end
             end
         end
-        return closestPriority or closestNormal
+        return closestNormal
     end
 
     -- Loop for Reset Logic (Combat V2 Style)
@@ -441,9 +476,13 @@ local function InitializeAutoMine()
                          end
                          
                          if targetValid and Config.OreFilterEnabled then
-                             local isPriorityRock = (Config.PriorityOre ~= "None" and rockModel.Name == Config.PriorityOre)
+                             -- Logic: Check if current target is in priority list
+                             local isPriority = false
+                             for _, pName in ipairs(Config.PriorityList) do
+                                 if rockModel.Name == pName then isPriority = true; break end
+                             end
                              
-                             if Config.BreakNonPriority and not isPriorityRock then
+                             if Config.BreakNonPriority and not isPriority then
                                  -- Ignore filter, break it
                              else
                                  if not ShouldContinueMining(rockModel) then
@@ -1090,7 +1129,57 @@ FarmingTab:CreateSection("Auto Mine")
 FarmingTab:CreateToggle({Name = "Enabled", CurrentValue = false, Flag = "AutoMine", Callback = function(v) Config.AutoMine = v end})
 
 FarmingTab:CreateSection("Target Selection")
-local PriorityDropdown = FarmingTab:CreateDropdown({Name = "Priority Ore (Overrides Everything)", Options = {"None"}, CurrentOption = {"None"}, Flag = "PriorityOre", Callback = function(o) Config.PriorityOre = o[1] end})
+-- Priority Logic
+local PriorityLabel = FarmingTab:CreateParagraph({Title = "Current Priority Queue", Content = "None selected"})
+
+local PriorityDropdown
+PriorityDropdown = FarmingTab:CreateDropdown({
+    Name = "Priority Ores (Order Matters!)", 
+    Options = {"Loading..."}, 
+    CurrentOption = {},
+    MultipleOptions = true,
+    Flag = "PriorityOresMulti",
+    Callback = function(selected)
+        -- Ordered Logic: Compare new selection with saved Config.PriorityList
+        -- Rayfield sends 'selected' as a table, likely sorted alphabetically or by index, not click order.
+        -- We must deduce click order.
+        
+        -- 1. Check for removed items
+        for i = #Config.PriorityList, 1, -1 do
+            local item = Config.PriorityList[i]
+            local found = false
+            for _, s in ipairs(selected) do
+                if s == item then found = true; break end
+            end
+            if not found then
+                table.remove(Config.PriorityList, i)
+            end
+        end
+        
+        -- 2. Check for added items
+        for _, s in ipairs(selected) do
+            local found = false
+            for _, item in ipairs(Config.PriorityList) do
+                if item == s then found = true; break end
+            end
+            if not found then
+                table.insert(Config.PriorityList, s)
+            end
+        end
+        
+        -- Update UI Label
+        if #Config.PriorityList == 0 then
+            PriorityLabel:Set({Title = "Current Priority Queue", Content = "None selected"})
+        else
+            local txt = ""
+            for i, p in ipairs(Config.PriorityList) do
+                txt = txt .. i .. ". " .. p .. "  >  "
+            end
+            PriorityLabel:Set({Title = "Current Priority Queue", Content = txt:sub(1, -6)})
+        end
+    end
+})
+
 FarmingTab:CreateToggle({Name = "Break Non-Priority Rocks (Spawn Help)", CurrentValue = false, Flag = "BreakNonPriority", Callback = function(v) Config.BreakNonPriority = v end})
 
 -- Dynamic Rock Toggles
@@ -1106,7 +1195,7 @@ task.spawn(function()
                 end
             end
             if needsRefresh then
-                local opts = {"None"}; for k in pairs(SeenRocks) do table.insert(opts, k) end; table.sort(opts)
+                local opts = {}; for k in pairs(SeenRocks) do table.insert(opts, k) end; table.sort(opts)
                 PriorityDropdown:Refresh(opts)
             end
         end
