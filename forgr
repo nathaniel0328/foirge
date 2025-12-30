@@ -1,3 +1,9 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE FORGE: COMPLETE EDITION (Updated)
+-- Features: Multi-Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
+-- Update: Dynamic Greedy Cey Teleport
+-- ═══════════════════════════════════════════════════════════════════════════
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -11,6 +17,10 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 
 _G.TheForgeLoaded = true 
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CONFIGURATION
+-- ═══════════════════════════════════════════════════════════════════════════
 
 local Config = {
     -- MINING
@@ -567,7 +577,7 @@ local function InitializeAutoMine()
             
             -- Spam Lava Logic (Up/Down)
             if Config.SpamLava then
-                if tick() - LavaSpamState.LastSwitch >= 0.25 then
+                if tick() - LavaSpamState.LastSwitch >= 0.5 then
                     LavaSpamState.IsUp = not LavaSpamState.IsUp
                     LavaSpamState.LastSwitch = tick()
                 end
@@ -962,14 +972,26 @@ local function InitializeForgeAndSell()
     end
 
     local function TalkToSeller()
-        local SELLER_POSITION = Vector3.new(-141.95, 21.30, -27.09)
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then return false end
+
+        -- Dynamic Find: Look for the model shown in the explorer (Workspace.Proximity.Greedy Cey)
+        local greedyModel = Workspace:FindFirstChild("Proximity") and Workspace.Proximity:FindFirstChild("Greedy Cey")
+        if not greedyModel then 
+            return false 
+        end
+        
+        -- Get the location from the model's pivot (covers WorldPivot property)
+        local targetCFrame = greedyModel:GetPivot()
+
         local oldPos = root.CFrame
-        root.CFrame = CFrame.new(SELLER_POSITION)
+        root.CFrame = targetCFrame
         task.wait(0.5)
-        local prompt = Workspace.Proximity["Greedy Cey"].ProximityPrompt
+        
+        -- Find the prompt dynamically inside the model
+        local prompt = greedyModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+        
         if prompt then
             fireproximityprompt(prompt); task.wait(0.5)
             pcall(function()
