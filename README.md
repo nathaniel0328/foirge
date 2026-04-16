@@ -1,243 +1,103 @@
--- DrivingEmpire.lua (Fully Standalone Mobile UI Version)
+print("[DE-Auto] Starting full script...")
 
-local Players   = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
-local CoreGui   = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local localPlayer = Players.LocalPlayer
 
+-- ═══════════════════════════════════════════════════════════
+--  UI Library Wrapper (Orion UI for Mobile Support)
+-- ═══════════════════════════════════════════════════════════
+print("[DE-Auto] Fetching Orion UI Library...")
+local success, OrionLib = pcall(function()
+    return loadstring(game:HttpGet(('https://raw.githubusercontent.com/shlexsoftware/Orion/main/source')))()
+end)
+
+if not success or not OrionLib then
+    warn("[DE-Auto] CRITICAL ERROR: Your executor failed to load the UI library. It might be blocking GitHub raw links. Check your executor's settings.")
+    return
+end
+
+print("[DE-Auto] UI Library loaded. Building window...")
+
+local Window = OrionLib:MakeWindow({
+    Name = "Driving Empire Auto | Mobile", 
+    HidePremium = true, 
+    SaveConfig = false, 
+    IntroEnabled = false
+})
+
+local UI = {}
+local uiValues = {}
+
+UI.GetValue = function(id) return uiValues[id] end
+UI.SetValue = function(id, val) uiValues[id] = val end
+
+function UI.AddTab(tabName, callback)
+    local tab = Window:MakeTab({
+        Name = tabName,
+        Icon = "rbxassetid://4483345998",
+        PremiumOnly = false
+    })
+    
+    local tabBuilder = {}
+    
+    function tabBuilder:Section(secName, side)
+        tab:AddLabel("--- " .. secName .. " ---")
+        local sectionObj = {}
+        
+        function sectionObj:Toggle(id, name, default)
+            uiValues[id] = default
+            tab:AddToggle({
+                Name = name,
+                Default = default,
+                Callback = function(val) uiValues[id] = val end
+            })
+        end
+        
+        function sectionObj:Button(name, cb)
+            tab:AddButton({Name = name, Callback = cb})
+        end
+        
+        function sectionObj:SliderInt(id, name, min, max, default)
+            uiValues[id] = default
+            tab:AddSlider({
+                Name = name, Min = min, Max = max, Default = default, Color = Color3.fromRGB(255,255,255), Increment = 1, ValueName = "",
+                Callback = function(val) uiValues[id] = val end
+            })
+        end
+        
+        function sectionObj:SliderFloat(id, name, min, max, default, format)
+            uiValues[id] = default
+            tab:AddSlider({
+                Name = name, Min = min, Max = max, Default = default, Color = Color3.fromRGB(255,255,255), Increment = 0.1, ValueName = "",
+                Callback = function(val) uiValues[id] = val end
+            })
+        end
+        
+        function sectionObj:Tip(text)
+            tab:AddLabel("💡 " .. text)
+        end
+        
+        function sectionObj:Spacing() end
+        
+        return sectionObj
+    end
+    callback(tabBuilder)
+end
+
+local function notify(title, content)
+    OrionLib:MakeNotification({Name = title, Content = content, Image = "rbxassetid://4483345998", Time = 3})
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  Original Script Offsets & Memory
+-- ═══════════════════════════════════════════════════════════
 local offsets = {
     base_part = { primitive = 0x148 },
     primitive  = { cframe = 0xC0, velocity = 0xF0 },
 }
 
--- ─────────────────────────────────────────────
---  Global State (Replaces External UI Libraries)
--- ─────────────────────────────────────────────
-local STATE = {
-    auto_arrest = false,
-    auto_rob = false,
-    y_offset = 20,
-    atm_hold = 7,
-    atm_wait = 1.5,
-    sell_threshold = 10
-}
-
-local function secEnabled() return STATE.auto_arrest end
-local function atmEnabled() return STATE.auto_rob end
-local function getYOffset() return STATE.y_offset end
-local function getSellThreshold() return STATE.sell_threshold end
-
--- ─────────────────────────────────────────────
---  Mobile UI Generation
--- ─────────────────────────────────────────────
-if CoreGui:FindFirstChild("DEMobileHub") then
-    CoreGui.DEMobileHub:Destroy()
-elseif localPlayer:WaitForChild("PlayerGui"):FindFirstChild("DEMobileHub") then
-    localPlayer.PlayerGui.DEMobileHub:Destroy()
-end
-
-local mobileGui = Instance.new("ScreenGui")
-mobileGui.Name = "DEMobileHub"
-mobileGui.ResetOnSpawn = false
-local success = pcall(function() mobileGui.Parent = CoreGui end)
-if not success then mobileGui.Parent = localPlayer:WaitForChild("PlayerGui") end
-
--- Open/Close Button
-local toggleBtn = Instance.new("TextButton", mobileGui)
-toggleBtn.Size = UDim2.new(0, 110, 0, 40)
-toggleBtn.Position = UDim2.new(0, 10, 0, 10)
-toggleBtn.Text = "Open Menu"
-toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.TextSize = 14
-toggleBtn.Active = true
-toggleBtn.Draggable = true
-toggleBtn.BorderSizePixel = 2
-toggleBtn.BorderColor3 = Color3.fromRGB(50, 150, 255)
-
--- Main Frame
-local mainFrame = Instance.new("Frame", mobileGui)
-mainFrame.Size = UDim2.new(0, 300, 0, 350)
-mainFrame.Position = UDim2.new(0.5, -150, 0.5, -175)
-mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-mainFrame.BorderSizePixel = 2
-mainFrame.BorderColor3 = Color3.fromRGB(50, 150, 255)
-mainFrame.Active = true
-mainFrame.Draggable = true
-mainFrame.Visible = false
-
-local titleBar = Instance.new("TextLabel", mainFrame)
-titleBar.Size = UDim2.new(1, 0, 0, 30)
-titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-titleBar.Text = " Driving Empire Hub"
-titleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
-titleBar.Font = Enum.Font.GothamBold
-titleBar.TextSize = 16
-titleBar.TextXAlignment = Enum.TextXAlignment.Left
-
-toggleBtn.Activated:Connect(function()
-    mainFrame.Visible = not mainFrame.Visible
-end)
-
--- Tab Buttons
-local tabContainer = Instance.new("Frame", mainFrame)
-tabContainer.Size = UDim2.new(1, 0, 0, 35)
-tabContainer.Position = UDim2.new(0, 0, 0, 30)
-tabContainer.BackgroundTransparency = 1
-
-local btnTabArrest = Instance.new("TextButton", tabContainer)
-btnTabArrest.Size = UDim2.new(0.5, 0, 1, 0)
-btnTabArrest.Text = "Auto Arrest"
-btnTabArrest.Font = Enum.Font.GothamBold
-btnTabArrest.TextColor3 = Color3.new(1,1,1)
-btnTabArrest.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-
-local btnTabRob = Instance.new("TextButton", tabContainer)
-btnTabRob.Size = UDim2.new(0.5, 0, 1, 0)
-btnTabRob.Position = UDim2.new(0.5, 0, 0, 0)
-btnTabRob.Text = "Auto Rob"
-btnTabRob.Font = Enum.Font.GothamBold
-btnTabRob.TextColor3 = Color3.new(1,1,1)
-btnTabRob.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-
--- Pages
-local pageArrest = Instance.new("ScrollingFrame", mainFrame)
-pageArrest.Size = UDim2.new(1, 0, 1, -65)
-pageArrest.Position = UDim2.new(0, 0, 0, 65)
-pageArrest.BackgroundTransparency = 1
-pageArrest.CanvasSize = UDim2.new(0, 0, 0, 300)
-pageArrest.ScrollBarThickness = 4
-
-local pageRob = Instance.new("ScrollingFrame", mainFrame)
-pageRob.Size = UDim2.new(1, 0, 1, -65)
-pageRob.Position = UDim2.new(0, 0, 0, 65)
-pageRob.BackgroundTransparency = 1
-pageRob.CanvasSize = UDim2.new(0, 0, 0, 400)
-pageRob.ScrollBarThickness = 4
-pageRob.Visible = false
-
-btnTabArrest.Activated:Connect(function()
-    pageArrest.Visible = true; pageRob.Visible = false
-    btnTabArrest.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-    btnTabRob.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-end)
-
-btnTabRob.Activated:Connect(function()
-    pageArrest.Visible = false; pageRob.Visible = true
-    btnTabArrest.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    btnTabRob.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-end)
-
--- UI Helper Functions
-local uiYArrest = 10
-local uiYRob = 10
-
-local function createToggle(page, text, stateKey, startY)
-    local btn = Instance.new("TextButton", page)
-    btn.Size = UDim2.new(0.9, 0, 0, 40)
-    btn.Position = UDim2.new(0.05, 0, 0, startY)
-    btn.Text = text .. ": OFF"
-    btn.Font = Enum.Font.GothamBold
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
-    
-    btn.Activated:Connect(function()
-        STATE[stateKey] = not STATE[stateKey]
-        if STATE[stateKey] then
-            btn.Text = text .. ": ON"
-            btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        else
-            btn.Text = text .. ": OFF"
-            btn.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
-        end
-    end)
-    return startY + 50
-end
-
-local function createButton(page, text, callback, startY)
-    local btn = Instance.new("TextButton", page)
-    btn.Size = UDim2.new(0.9, 0, 0, 35)
-    btn.Position = UDim2.new(0.05, 0, 0, startY)
-    btn.Text = text
-    btn.Font = Enum.Font.GothamBold
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    btn.Activated:Connect(callback)
-    return startY + 45
-end
-
-local function createAdjuster(page, text, stateKey, step, startY)
-    local frame = Instance.new("Frame", page)
-    frame.Size = UDim2.new(0.9, 0, 0, 40)
-    frame.Position = UDim2.new(0.05, 0, 0, startY)
-    frame.BackgroundTransparency = 1
-    
-    local lbl = Instance.new("TextLabel", frame)
-    lbl.Size = UDim2.new(0.5, 0, 1, 0)
-    lbl.Text = text
-    lbl.TextColor3 = Color3.new(1,1,1)
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.BackgroundTransparency = 1
-    
-    local valLbl = Instance.new("TextLabel", frame)
-    valLbl.Size = UDim2.new(0.2, 0, 1, 0)
-    valLbl.Position = UDim2.new(0.65, 0, 0, 0)
-    valLbl.Text = tostring(STATE[stateKey])
-    valLbl.TextColor3 = Color3.new(1,1,1)
-    valLbl.Font = Enum.Font.GothamBold
-    valLbl.BackgroundTransparency = 1
-    
-    local btnSub = Instance.new("TextButton", frame)
-    btnSub.Size = UDim2.new(0.15, 0, 0.8, 0)
-    btnSub.Position = UDim2.new(0.5, 0, 0.1, 0)
-    btnSub.Text = "-"
-    btnSub.Font = Enum.Font.GothamBold
-    btnSub.BackgroundColor3 = Color3.fromRGB(50,50,50)
-    btnSub.TextColor3 = Color3.new(1,1,1)
-    
-    local btnAdd = Instance.new("TextButton", frame)
-    btnAdd.Size = UDim2.new(0.15, 0, 0.8, 0)
-    btnAdd.Position = UDim2.new(0.85, 0, 0.1, 0)
-    btnAdd.Text = "+"
-    btnAdd.Font = Enum.Font.GothamBold
-    btnAdd.BackgroundColor3 = Color3.fromRGB(50,50,50)
-    btnAdd.TextColor3 = Color3.new(1,1,1)
-    
-    btnSub.Activated:Connect(function()
-        STATE[stateKey] = STATE[stateKey] - step
-        valLbl.Text = tostring(STATE[stateKey])
-    end)
-    btnAdd.Activated:Connect(function()
-        STATE[stateKey] = STATE[stateKey] + step
-        valLbl.Text = tostring(STATE[stateKey])
-    end)
-    
-    return startY + 50
-end
-
--- Forward Declarations
-local joinSecurityTeam, joinOutlawTeam, atm_sell_bag
-
--- Populate Arrest Page
-uiYArrest = createToggle(pageArrest, "Enable Auto Arrest", "auto_arrest", uiYArrest)
-uiYArrest = createButton(pageArrest, "Get Security Team", function() task.spawn(joinSecurityTeam) end, uiYArrest)
-uiYArrest = createAdjuster(pageArrest, "Y Offset (Studs)", "y_offset", 2, uiYArrest)
-
--- Populate Rob Page
-uiYRob = createToggle(pageRob, "Enable Auto Rob", "auto_rob", uiYRob)
-uiYRob = createButton(pageRob, "Get Outlaw Team", function() task.spawn(joinOutlawTeam) end, uiYRob)
-uiYRob = createButton(pageRob, "Deposit Bags Now", function() task.spawn(atm_sell_bag) end, uiYRob)
-uiYRob = createAdjuster(pageRob, "Sell Threshold (Bags)", "sell_threshold", 1, uiYRob)
-uiYRob = createAdjuster(pageRob, "Hold Time (s)", "atm_hold", 1, uiYRob)
-uiYRob = createAdjuster(pageRob, "Wait Time (s)", "atm_wait", 0.5, uiYRob)
-
-
--- ─────────────────────────────────────────────
---  ProximityPrompt offset 
--- ─────────────────────────────────────────────
 local promptHoldOffset = nil
 task.spawn(function()
     local ok, res = pcall(function() return game:HttpGet("https://offsets.ntgetwritewatch.workers.dev/offsets.json") end)
@@ -251,9 +111,64 @@ task.spawn(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  Memory helpers  (Outlaw Hunter)
+--  Mobile Bypasses
 -- ═══════════════════════════════════════════════════════════
+local function clickButton(button)
+    if getconnections then
+        for _, conn in ipairs(getconnections(button.MouseButton1Click)) do pcall(function() conn:Fire() end) end
+        for _, conn in ipairs(getconnections(button.Activated)) do pcall(function() conn:Fire() end) end
+    else
+        local absPos, absSize = button.AbsolutePosition, button.AbsoluteSize
+        local x, y = absPos.X + absSize.X / 2, absPos.Y + absSize.Y / 2
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+        task.wait(0.1)
+        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  Forward declarations
+-- ═══════════════════════════════════════════════════════════
+local joinSecurityTeam
+local joinOutlawTeam
+local atm_sell_bag
+
+-- ═══════════════════════════════════════════════════════════
+--  UI Building
+-- ═══════════════════════════════════════════════════════════
+UI.AddTab("Auto Arrest", function(tab)
+    local ctrl = tab:Section("Controls", "Left")
+    ctrl:Toggle("oh_enabled", "Enable Auto Arrest", false)
+    ctrl:Button("Get Security Team", function() task.spawn(joinSecurityTeam) end)
+
+    local settings = tab:Section("Settings", "Right")
+    settings:SliderInt("oh_offset", "Y Offset (studs)", -50, 50, 20)
+    settings:Tip("Adjusts the vertical teleport offset")
+end)
+
+UI.AddTab("Auto Rob", function(tab)
+    local ctrl = tab:Section("Controls", "Left")
+    ctrl:Toggle("atm_enabled", "Enable Auto Rob", false)
+    ctrl:Button("Deposit Bags", function() task.spawn(atm_sell_bag) end)
+    ctrl:Button("Get Outlaw Team", function() task.spawn(joinOutlawTeam) end)
+
+    local settings = tab:Section("Settings", "Right")
+    settings:SliderInt("atm_hold",  "Hold Time (s)",  1, 20, 7)
+    settings:SliderFloat("atm_wait", "Wait Time (s)", 0.5, 5.0, 1.5, "%.1f")
+    settings:SliderInt("atm_sell_threshold", "Sell After (bags)", 1, 50, 10)
+    settings:Tip("Deposits when this many bags are held")
+end)
+
+-- ═══════════════════════════════════════════════════════════
+--  Shared Settings & Helpers
+-- ═══════════════════════════════════════════════════════════
+local function secEnabled() return UI.GetValue("oh_enabled") end
+local function atmEnabled() return UI.GetValue("atm_enabled") end
+local function getYOffset() return UI.GetValue("oh_offset") or 20 end
+local function getSellThreshold() return UI.GetValue("atm_sell_threshold") or 10 end
+
 local function read_fvector3(address, offset)
+    if not memory_read then return Vector3.new() end
     return Vector3.new(
         memory_read("float", address + offset),
         memory_read("float", address + offset + 0x4),
@@ -261,49 +176,15 @@ local function read_fvector3(address, offset)
     )
 end
 
-local function write_fvector3(address, offset, vec)
-    memory_write("float", address + offset,       vec.X)
-    memory_write("float", address + offset + 0x4, vec.Y)
-    memory_write("float", address + offset + 0x8, vec.Z)
-end
-
-local function read_rotation(address)
-    local r = {}
-    for i, key in ipairs({"r00","r01","r02","r10","r11","r12","r20","r21","r22"}) do
-        r[key] = memory_read("float", address + (i - 1) * 0x4)
-    end
-    return r
-end
-
-local function write_rotation(address, rotation)
-    local keys = {"r00","r01","r02","r10","r11","r12","r20","r21","r22"}
-    for i, key in ipairs(keys) do
-        memory_write("float", address + (i - 1) * 0x4, rotation[key])
-    end
-end
-
 local function read_cframe(part)
-    if not part then return nil end
+    if not part or not memory_read then return nil end
     local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
     if prim == 0 then return nil end
-    return {
-        rot = read_rotation(prim + offsets.primitive.cframe),
-        pos = read_fvector3(prim, offsets.primitive.cframe + 0x24),
-    }
-end
-
-local function write_cframe(part, cframe)
-    if not part then return end
-    local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-    if prim == 0 then return end
-    write_rotation(prim + offsets.primitive.cframe, cframe.rot)
-    write_fvector3(prim, offsets.primitive.cframe + 0x24, cframe.pos)
-end
-
-local function cancel_velocity(part)
-    local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-    if prim == 0 then return end
-    write_fvector3(prim, offsets.primitive.velocity, Vector3.new(0, 0, 0))
+    local r = {}
+    for i, key in ipairs({"r00","r01","r02","r10","r11","r12","r20","r21","r22"}) do
+        r[key] = memory_read("float", prim + offsets.primitive.cframe + (i - 1) * 0x4)
+    end
+    return { rot = r, pos = read_fvector3(prim, offsets.primitive.cframe + 0x24) }
 end
 
 local function teleportTo(targetPosition)
@@ -311,27 +192,20 @@ local function teleportTo(targetPosition)
     if not character then return end
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
-    local sourceCFrame = read_cframe(rootPart)
-    if not sourceCFrame then return end
-    sourceCFrame.pos = targetPosition + Vector3.new(0, 3 + getYOffset(), 0)
-    write_cframe(rootPart, sourceCFrame)
-    cancel_velocity(rootPart)
+    
+    rootPart.CFrame = CFrame.new(targetPosition + Vector3.new(0, 3 + getYOffset(), 0))
+    rootPart.Velocity = Vector3.zero
+end
+
+local function distanceBetween(a, b)
+    return (a - b).Magnitude
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Team helpers & Shared Join Pad
+--  Team Helpers
 -- ═══════════════════════════════════════════════════════════
-local function isOutlaw(player)
-    local team = player.Team
-    if not team then return false end
-    return string.lower(team.Name) == "outlaw"
-end
-
-local function isSecurity(player)
-    local team = player.Team
-    if not team then return false end
-    return string.lower(team.Name) == "security"
-end
+local function isOutlaw(player) return player.Team and string.lower(player.Team.Name) == "outlaw" end
+local function isSecurity(player) return player.Team and string.lower(player.Team.Name) == "security" end
 
 local function joinViapad(padName, checkFn, label)
     local PAD_AREAS = {
@@ -344,91 +218,54 @@ local function joinViapad(padName, checkFn, label)
         local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        root.Position = pos
-        root.Velocity  = Vector3.new(0, 0, 0)
+        if root then root.Position = pos; root.Velocity = Vector3.zero end
     end
 
+    notify(label, "Teleporting to pad area...")
     local renderStart = os.clock()
     local jobContainer = nil
-    while os.clock() - renderStart < 3 do
+    
+    while os.clock() - renderStart < 3 and not jobContainer do
         rawTeleport(PAD_AREA)
         task.wait(0.1)
-        if not jobContainer then
-            jobContainer = game.Workspace.Game.Jobs:FindFirstChild("JobPadContainer")
-        end
-    end
-
-    local extraAttempts = 0
-    while not jobContainer and extraAttempts < 100 do
-        rawTeleport(PAD_AREA)
-        task.wait(0.1)
-        jobContainer = game.Workspace.Game.Jobs:FindFirstChild("JobPadContainer")
-        extraAttempts = extraAttempts + 1
+        jobContainer = Workspace:FindFirstChild("Game") and Workspace.Game:FindFirstChild("Jobs") and Workspace.Game.Jobs:FindFirstChild("JobPadContainer")
     end
 
     if not jobContainer then return false end
     local pad = jobContainer:FindFirstChild(padName)
-    if not pad then return false end
-
-    local padPart = pad:IsA("BasePart") and pad or pad:FindFirstChildWhichIsA("BasePart", true)
+    local padPart = pad and (pad:IsA("BasePart") and pad or pad:FindFirstChildWhichIsA("BasePart", true))
     if not padPart then return false end
-    local padPos = padPart.Position
 
-    local function teleportToPad(pos)
-        local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
-        if not char then return end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        root.Position = pos + Vector3.new(0, 0.5, 0)
-        root.Velocity  = Vector3.new(0, 0, 0)
-    end
-    
-    local holdTime = 0
-    while holdTime < 2 do
-        teleportToPad(padPos)
-        task.wait(0.1)
-        holdTime = holdTime + 0.1
-    end
-    task.wait(1)
+    for i = 1, 20 do rawTeleport(padPart.Position + Vector3.new(0, 0.5, 0)); task.wait(0.1) end
 
-    local clickTimeout = 10
     local clickTime = 0
-    while not checkFn(localPlayer) and clickTime < clickTimeout do
+    while not checkFn(localPlayer) and clickTime < 10 do
         local promptUI = localPlayer.PlayerGui:FindFirstChild("PromptUI")
         if promptUI then
-            local v2 = promptUI:FindFirstChild("PromptV2")
-            local bf = v2 and v2:FindFirstChild("ButtonsFrame")
-            local confirmBtn = bf and bf:FindFirstChild("Confirm")
-            if confirmBtn then
-                local fired = false
-                if getconnections then
-                    for _, conn in ipairs(getconnections(confirmBtn.Activated)) do conn:Fire(); fired = true end
-                    for _, conn in ipairs(getconnections(confirmBtn.MouseButton1Click)) do conn:Fire(); fired = true end
-                end
-                
-                if not fired then
-                    local vim = game:GetService("VirtualInputManager")
-                    local center = confirmBtn.AbsolutePosition + (confirmBtn.AbsoluteSize / 2)
-                    vim:SendMouseButtonEvent(center.X, center.Y + 36, 0, true, game, 1)
-                    task.wait(0.1)
-                    vim:SendMouseButtonEvent(center.X, center.Y + 36, 0, false, game, 1)
-                end
-            else
-                teleportToPad(padPos)
-            end
+            local confirmBtn = promptUI:FindFirstChild("PromptV2") and promptUI.PromptV2:FindFirstChild("ButtonsFrame") and promptUI.PromptV2.ButtonsFrame:FindFirstChild("Confirm")
+            if confirmBtn then clickButton(confirmBtn) end
+        else
+            rawTeleport(padPart.Position + Vector3.new(0, 0.5, 0))
         end
-
-        task.wait(0.5)
-        clickTime = clickTime + 0.5
+        task.wait(0.5); clickTime = clickTime + 0.5
     end
 
-    if checkFn(localPlayer) then return true end
+    if checkFn(localPlayer) then notify(label, "Joined " .. label .. " team!"); return true end
     return false
 end
 
+joinSecurityTeam = function()
+    if isSecurity(localPlayer) then return true end
+    return joinViapad("SecurityPad", isSecurity, "Security")
+end
+
+joinOutlawTeam = function()
+    if isOutlaw(localPlayer) then return true end
+    return joinViapad("CriminalPad", isOutlaw, "Outlaw")
+end
+
 -- ═══════════════════════════════════════════════════════════
---  Outlaw Hunter logic
+--  Outlaw Hunter (Full Logic Restored)
 -- ═══════════════════════════════════════════════════════════
 local function getOutlaws()
     local outlaws = {}
@@ -454,19 +291,18 @@ end
 local function getPositionFromMemory(player)
     local char = player.Character
     if not char then return nil end
-    for _, name in ipairs({"HumanoidRootPart", "UpperTorso", "LowerTorso", "Head"}) do
-        local part = char:FindFirstChild(name)
-        if part and part.Address and part.Address ~= 0 then
-            local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-            if prim and prim ~= 0 then
-                local x = memory_read("float", prim + offsets.primitive.cframe + 0x24)
-                local y = memory_read("float", prim + offsets.primitive.cframe + 0x28)
-                local z = memory_read("float", prim + offsets.primitive.cframe + 0x2C)
-                if x and y and z then return Vector3.new(x, y, z) end
-            end
+    local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso")
+    if memory_read and root and root.Address and root.Address ~= 0 then
+        local prim = memory_read("uintptr", root.Address + offsets.base_part.primitive)
+        if prim and prim ~= 0 then
+            local x = memory_read("float", prim + offsets.primitive.cframe + 0x24)
+            local y = memory_read("float", prim + offsets.primitive.cframe + 0x28)
+            local z = memory_read("float", prim + offsets.primitive.cframe + 0x2C)
+            if x and y and z then return Vector3.new(x, y, z) end
         end
     end
-    return nil
+    -- Mobile fallback if no memory read
+    return root and root.Position
 end
 
 local function getMyPosition()
@@ -474,13 +310,28 @@ local function getMyPosition()
     if not char then return nil end
     local root = char:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
-    local cf = read_cframe(root)
-    return cf and cf.pos
+    if memory_read then
+        local cf = read_cframe(root)
+        return cf and cf.pos
+    end
+    return root.Position
 end
 
-local function distanceBetween(a, b)
-    local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z
-    return math.sqrt(dx*dx + dy*dy + dz*dz)
+local function getClosestOutlaw()
+    local myPos = getMyPosition()
+    local closest, closestDist = nil, math.huge
+    for _, outlaw in ipairs(getOutlaws()) do
+        local pos = getPositionFromMemory(outlaw)
+        if pos then
+            if myPos then
+                local dist = distanceBetween(myPos, pos)
+                if dist < closestDist then closestDist = dist; closest = outlaw end
+            else
+                return outlaw
+            end
+        end
+    end
+    return closest
 end
 
 local function getATMPositions()
@@ -498,23 +349,9 @@ local function getATMPositions()
     }
 end
 
-local function getClosestOutlaw()
-    local myPos = getMyPosition()
-    local closest, closestDist = nil, math.huge
-    for _, outlaw in ipairs(getOutlaws()) do
-        local pos = getPositionFromMemory(outlaw)
-        if pos then
-            if myPos then
-                local dist = distanceBetween(myPos, pos)
-                if dist < closestDist then closestDist = dist; closest = outlaw end
-            else return outlaw end
-        end
-    end
-    return closest
-end
-
 local function searchATMsForOutlaws(shouldRestartFn)
     local atmPositions = getATMPositions()
+    notify("Outlaw Hunter", "Searching ATMs for outlaws...")
     local atmIndex, searchTime = 1, 0
     while searchTime < 90 do
         if shouldRestartFn() then return nil end
@@ -527,42 +364,53 @@ local function searchATMsForOutlaws(shouldRestartFn)
             if shouldRestartFn() then return nil end
             task.wait(0.1); waitTime = waitTime + 0.1
             local target = getClosestOutlaw()
-            if target then return target end
+            if target then
+                notify("Outlaw Hunter", "Outlaw rendered at ATM " .. atmIndex .. "!")
+                return target
+            end
         end
-
         atmIndex = (atmIndex % #atmPositions) + 1
         searchTime = searchTime + 3
     end
+    notify("Outlaw Hunter", "No outlaws found at ATMs.")
     return nil
 end
 
 local trackingTarget, trackingActive = nil, false
+
 local function startTracking(target)
-    trackingTarget, trackingActive = target, true
+    trackingTarget = target
+    trackingActive = true
     task.spawn(function()
         local lastPos = nil
         local oX, oY, oZ = 0, 0, 0
         while trackingActive and isOutlaw(trackingTarget) do
             if not secEnabled() then
-                task.wait(0.2); lastPos = nil; oX, oY, oZ = 0, 0, 0; continue
+                task.wait(0.2)
+                lastPos = nil; oX, oY, oZ = 0, 0, 0
+                continue
             end
             if trackingTarget.Character then
                 local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
                 if rp then
-                    local cf = read_cframe(rp)
-                    if cf then
-                        local cur = cf.pos
-                        if lastPos then
-                            local dx, dy, dz = cur.X-lastPos.X, cur.Y-lastPos.Y, cur.Z-lastPos.Z
-                            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                            if dist > 1 then
-                                local spd = math.min(dist * 15, 50)
-                                oX, oY, oZ = (dx/dist)*spd, (dy/dist)*spd, (dz/dist)*spd
-                            elseif dist < 0.1 then oX, oY, oZ = 0, 0, 0 end
-                        end
-                        lastPos = cur
-                        teleportTo(Vector3.new(cur.X+oX, cur.Y+oY, cur.Z+oZ))
+                    local cur = rp.Position
+                    if memory_read then
+                        local cf = read_cframe(rp)
+                        if cf then cur = cf.pos end
                     end
+                    
+                    if lastPos then
+                        local dx, dy, dz = cur.X-lastPos.X, cur.Y-lastPos.Y, cur.Z-lastPos.Z
+                        local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                        if dist > 1 then
+                            local spd = math.min(dist * 15, 50)
+                            oX, oY, oZ = (dx/dist)*spd, (dy/dist)*spd, (dz/dist)*spd
+                        elseif dist < 0.1 then
+                            oX, oY, oZ = 0, 0, 0
+                        end
+                    end
+                    lastPos = cur
+                    teleportTo(Vector3.new(cur.X+oX, cur.Y+oY, cur.Z+oZ))
                 end
             end
             task.wait()
@@ -570,118 +418,109 @@ local function startTracking(target)
     end)
 end
 
-local function stopTracking() trackingActive = false; trackingTarget = nil end
-
-local isJoiningSecurity = false
-joinSecurityTeam = function()
-    if isSecurity(localPlayer) then return true end
-    if isJoiningSecurity then return false end
-    isJoiningSecurity = true
-    local ok = joinViapad("SecurityPad", isSecurity, "Security")
-    isJoiningSecurity = false
-    return ok
+local function stopTracking()
+    trackingActive = false
+    trackingTarget = nil
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Auto ATM logic
+--  Auto ATM (Full Logic Restored)
 -- ═══════════════════════════════════════════════════════════
-local ATM_SETTINGS = { EscapeDist = 500, MinTpDist = 3000 }
+local ATM_SETTINGS = { HideDepth = -55, EscapeDist = 500, MinTpDist = 3000 }
 local PatrolPoints = {
     Vector3.new(0, 50, 0), Vector3.new(2000, 50, 0), Vector3.new(-2000, 50, 0),
-    Vector3.new(0, 50, 2000), Vector3.new(0, 50, -2000), Vector3.new(1500, 50, 1500), Vector3.new(-1500, 50, -1500),
+    Vector3.new(0, 50, 2000), Vector3.new(0, 50, -2000), Vector3.new(1500, 50, 1500), Vector3.new(-1500, 50, -1500)
 }
-local robbed_atms_memory, atm_patrol_index, atm_last_patrol = {}, 1, 0
+local robbed_atms_memory = {}
+local atm_patrol_index = 1
+local atm_last_patrol = 0
+local SELL_PAD = Vector3.new(-2543.308, 12.393, 4030.319)
 
 local function getBagCount()
     local count = 0
-    local backpack = localPlayer:FindFirstChild("Backpack")
-    if backpack then for _, tool in ipairs(backpack:GetChildren()) do if tool.Name == "CriminalMoneyBag" then count = count + 1 end end end
+    local bp = localPlayer:FindFirstChild("Backpack")
+    if bp then for _, t in ipairs(bp:GetChildren()) do if t.Name == "CriminalMoneyBag" then count = count + 1 end end end
     local char = localPlayer.Character
-    if char then for _, tool in ipairs(char:GetChildren()) do if tool:IsA("Tool") and tool.Name == "CriminalMoneyBag" then count = count + 1 end end end
+    if char then for _, t in ipairs(char:GetChildren()) do if t:IsA("Tool") and t.Name == "CriminalMoneyBag" then count = count + 1 end end end
     return count
-end
-
-local function atm_get_position(object)
-    if not object then return nil end
-    if typeof(object) == "Vector3" then return object end
-    if typeof(object) == "CFrame"  then return object.Position end
-    if object:IsA("BasePart")      then return object.Position end
-    if object:IsA("Model") then
-        if object.PrimaryPart then return object.PrimaryPart.Position end
-        local p = object:FindFirstChildWhichIsA("BasePart", true)
-        return p and p.Position
-    end
-    return nil
-end
-
-local function atm_enable_noclip()
-    local char = localPlayer.Character
-    if char then for _, part in ipairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
 end
 
 local function atm_teleport(target_pos)
     local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
     if not char then return end
     local root = char:FindFirstChild("HumanoidRootPart")
-    if root then
-        if root.Position then root.Position = target_pos end
-        if root.Velocity then root.Velocity = Vector3.new(0, 0, 0) end
+    if root then root.Position = target_pos; root.Velocity = Vector3.zero end
+end
+
+atm_sell_bag = function()
+    local char = localPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local root = char.HumanoidRootPart
+
+    notify("Auto ATM", "Going to deposit...")
+    local start = os.clock()
+    local dest = nil
+    
+    while os.clock() - start < 3 do
+        root.Position = SELL_PAD + Vector3.new(0, 0.5, 0)
+        root.Velocity = Vector3.zero
+        task.wait(0.1)
+        if not dest then
+            local jobs = Workspace:FindFirstChild("Game") and Workspace.Game:FindFirstChild("Jobs") or Workspace:FindFirstChild("Jobs")
+            local spawner = jobs and jobs:FindFirstChild("CriminalDropOffSpawners")
+            local target_part = spawner and spawner:FindFirstChild("CriminalDropOffSpawnerPermanent")
+            if target_part then
+                local zone = target_part:FindFirstChild("Zone")
+                dest = zone and zone.Position or target_part.Position
+            end
+        end
+    end
+    
+    local finalDest = dest or SELL_PAD
+    local holdStart = os.clock()
+    while os.clock() - holdStart < 2 do
+        root.Position = finalDest + Vector3.new(0, 0.5, 0)
+        root.Velocity  = Vector3.zero
+        task.wait(0.1)
     end
 end
 
-local function atm_is_broken(atm_model)
-    local mesh = atm_model:FindFirstChild("ATM")
-    if mesh and (mesh:FindFirstChild("BrokenSurfaceAppearance") or mesh:FindFirstChild("ATMElectricArc")) then return true end
-    return false
-end
-
-local function atm_escape_pos(from_pos)
-    local angle = math.random() * math.pi * 2
-    local dist  = ATM_SETTINGS.MinTpDist + math.random(0, 1000)
-    return Vector3.new(from_pos.X + math.cos(angle) * dist, from_pos.Y, from_pos.Z + math.sin(angle) * dist)
-end
-
 local function atm_scan(root_part)
-    local jobs = (Workspace:FindFirstChild("Game") and Workspace.Game:FindFirstChild("Jobs")) or Workspace:FindFirstChild("Jobs")
-    if not jobs or not root_part then return nil end
+    local jobs = Workspace:FindFirstChild("Game") and Workspace.Game:FindFirstChild("Jobs") or Workspace:FindFirstChild("Jobs")
+    if not jobs then return nil end
 
-    local candidates = {}
     local spawners = jobs:FindFirstChild("CriminalATMSpawners")
-    if spawners then candidates = spawners:GetDescendants() else candidates = jobs:GetDescendants() end
-
+    local candidates = spawners and spawners:GetDescendants() or jobs:GetDescendants()
     local my_pos = root_part.Position
     local best, best_dist = nil, math.huge
 
     for _, obj in ipairs(candidates) do
-        local atm_model, is_atm = nil, false
+        local atm_model, is_atm, atm_prompt = nil, false, nil
+
         if obj:IsA("ProximityPrompt") and obj.Enabled then
-            atm_model = obj.Parent; is_atm = true
+            atm_model = obj.Parent; is_atm = true; atm_prompt = obj
         elseif obj:IsA("BasePart") and string.find(obj.Name, "CriminalATMSpawner") then
             local inner = obj:FindFirstChild("CriminalATM")
             atm_model = inner or obj; is_atm = true
+            atm_prompt = atm_model:FindFirstChildWhichIsA("ProximityPrompt", true)
         end
 
         if is_atm and atm_model then
             if atm_model:IsA("Attachment") then atm_model = atm_model.Parent end
-            if atm_model and atm_model.Name == "CriminalATM" then
-                if atm_is_broken(atm_model) then atm_model = nil
-                else
-                    local mesh = atm_model:FindFirstChild("ATM")
-                    local pos_part = atm_model:FindFirstChild("Position") or mesh
-                    atm_model = pos_part or atm_model:FindFirstChildWhichIsA("BasePart", true) or atm_model
-                end
-            end
+            
+            local mesh = atm_model:FindFirstChild("ATM")
+            if not mesh or (not mesh:FindFirstChild("BrokenSurfaceAppearance") and not mesh:FindFirstChild("ATMElectricArc")) then
+                local pos_part = atm_model:FindFirstChild("Position") or mesh or atm_model:FindFirstChildWhichIsA("BasePart", true) or atm_model
+                local pos = pos_part and pos_part.Position or (atm_model:IsA("Model") and atm_model.PrimaryPart and atm_model.PrimaryPart.Position) or atm_model.Position
 
-            if atm_model then
-                local pos = atm_get_position(atm_model)
                 if pos then
                     local id = math.floor(pos.X) .. "_" .. math.floor(pos.Z)
                     local last_t = robbed_atms_memory[id]
                     if not last_t or (os.clock() - last_t > 120) then
-                        local dx, dy, dz = my_pos.X - pos.X, my_pos.Y - pos.Y, my_pos.Z - pos.Z
-                        local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                        if type(dist) == "number" and dist < best_dist then
-                            best_dist = dist; best = { pos = pos, obj = atm_model, id = id }
+                        local dist = (my_pos - pos).Magnitude
+                        if dist < best_dist then
+                            best_dist = dist
+                            best = { pos = pos, obj = pos_part, id = id, prompt = atm_prompt }
                         end
                     end
                 end
@@ -691,90 +530,53 @@ local function atm_scan(root_part)
     return best
 end
 
-local SELL_PAD = Vector3.new(-2543.308, 12.393, 4030.319)
-atm_sell_bag = function()
-    local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    local start = os.clock()
-    local dest = nil
-    while os.clock() - start < 3 do
-        root.Position = SELL_PAD + Vector3.new(0, 0.5, 0)
-        root.Velocity  = Vector3.new(0, 0, 0)
-        task.wait(0.1)
-        if not dest then
-            local jobs = (Workspace:FindFirstChild("Game") and Workspace.Game:FindFirstChild("Jobs")) or Workspace:FindFirstChild("Jobs")
-            local spawner = jobs and jobs:FindFirstChild("CriminalDropOffSpawners")
-            local target_part = spawner and spawner:FindFirstChild("CriminalDropOffSpawnerPermanent")
-            if target_part then
-                local zone = target_part:FindFirstChild("Zone")
-                dest = zone and zone.Position or target_part.Position
-            end
-        end
-    end
-
-    local finalDest = dest or SELL_PAD
-    local holdStart = os.clock()
-    while os.clock() - holdStart < 2 do
-        root.Position = finalDest + Vector3.new(0, 0.5, 0)
-        root.Velocity  = Vector3.new(0, 0, 0)
-        task.wait(0.1)
-    end
-    task.wait(1)
-end
-
-local isJoiningOutlaw = false
-joinOutlawTeam = function()
-    if isOutlaw(localPlayer) then return true end
-    if isJoiningOutlaw then return false end
-    isJoiningOutlaw = true
-    local ok, err = pcall(function() return joinViapad("CriminalPad", isOutlaw, "Outlaw") end)
-    isJoiningOutlaw = false
-    return ok
-end
-
+-- Security Evasion Thread
 local _evading = false
 task.spawn(function()
     while true do
         task.wait(0.3)
         if not atmEnabled() or _evading then continue end
 
-        local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
-        if not char then continue end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root or not root.Position then continue end
-        local my_pos = root.Position
+        local char = localPlayer.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then continue end
+        local my_pos = char.HumanoidRootPart.Position
 
         local detected = false
         for _, other in ipairs(Players:GetPlayers()) do
             if other == localPlayer then continue end
-            local team = other.Team
-            if not team or team.Name ~= "Security" then continue end
-            local oc = other.Character or Workspace:FindFirstChild(other.Name)
-            if not oc then continue end
-            local or_ = oc:FindFirstChild("HumanoidRootPart")
-            if not or_ or not or_.Position then continue end
-            local dx, dy, dz = my_pos.X - or_.Position.X, my_pos.Y - or_.Position.Y, my_pos.Z - or_.Position.Z
-            if math.sqrt(dx*dx + dy*dy + dz*dz) < ATM_SETTINGS.EscapeDist then
-                detected = true; break
+            if other.Team and other.Team.Name == "Security" then
+                local oc = other.Character
+                if oc and oc:FindFirstChild("HumanoidRootPart") then
+                    if (my_pos - oc.HumanoidRootPart.Position).Magnitude < ATM_SETTINGS.EscapeDist then
+                        detected = true; break
+                    end
+                end
             end
         end
 
         if detected then
             _evading = true
+            notify("Auto ATM", "Security nearby! Evading...")
             local evadeStart = os.clock()
+            local angle = math.random() * math.pi * 2
+            local dist = ATM_SETTINGS.MinTpDist + math.random(0, 1000)
+            local escapePos = Vector3.new(my_pos.X + math.cos(angle)*dist, my_pos.Y, my_pos.Z + math.sin(angle)*dist)
+            
             while os.clock() - evadeStart < 2 do
-                atm_teleport(atm_escape_pos(my_pos)); task.wait(0.1)
+                atm_teleport(escapePos)
+                task.wait(0.1)
             end
             _evading = false
         end
     end
 end)
 
+-- ═══════════════════════════════════════════════════════════
+--  Background Threads
+-- ═══════════════════════════════════════════════════════════
 local shouldRestart = false
 local currentOutlawSet = getOutlawNames()
+
 task.spawn(function()
     while true do
         task.wait(1)
@@ -789,35 +591,30 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.5)
-        if secEnabled() and not isSecurity(localPlayer) and not isJoiningSecurity then
-            joinSecurityTeam()
-        end
+        if secEnabled() and not isSecurity(localPlayer) then joinSecurityTeam() end
     end
 end)
 
-
 -- ═══════════════════════════════════════════════════════════
---  Main Threads
+--  Main Loop: Outlaw Hunter
 -- ═══════════════════════════════════════════════════════════
 task.spawn(function()
     while true do
-        if not secEnabled() then
-            stopTracking(); task.wait(0.2); continue
-        end
+        if not secEnabled() then stopTracking(); task.wait(0.2); continue end
 
         shouldRestart = false
         stopTracking()
 
         local outlaws = getOutlaws()
         if #outlaws == 0 then
+            notify("Outlaw Hunter", "No outlaws found, waiting...")
             while #getOutlaws() == 0 do task.wait(1) end
+            notify("Outlaw Hunter", "Outlaw detected! Starting hunt.")
             continue
         end
 
         local target = getClosestOutlaw()
-        if not target then
-            target = searchATMsForOutlaws(function() return shouldRestart or not secEnabled() end)
-        end
+        if not target then target = searchATMsForOutlaws(function() return shouldRestart or not secEnabled() end) end
         if not target then task.wait(2) continue end
 
         local memPos = getPositionFromMemory(target)
@@ -825,22 +622,19 @@ task.spawn(function()
         if shouldRestart then continue end
 
         local rootPart = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then
-            local rootWait = 0
-            while not rootPart and rootWait < 10 do
-                if shouldRestart or not secEnabled() then break end
-                task.wait(0.1); rootWait = rootWait + 0.1
-                rootPart = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-            end
+        local rootWait = 0
+        while not rootPart and rootWait < 10 do
+            if shouldRestart or not secEnabled() then break end
+            task.wait(0.1); rootWait = rootWait + 0.1
+            rootPart = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         end
-        if shouldRestart then continue end
+        if shouldRestart or not rootPart then task.wait(1); continue end
 
-        if not rootPart then task.wait(1); continue end
-
+        notify("Outlaw Hunter", "Tracking " .. target.Name .. "...")
         startTracking(target)
 
-        local waitTime, timeout = 0, 30
-        while isOutlaw(target) and waitTime < timeout do
+        local waitTime = 0
+        while isOutlaw(target) and waitTime < 30 do
             if shouldRestart or not secEnabled() then break end
             task.wait(0.1); waitTime = waitTime + 0.1
         end
@@ -851,37 +645,33 @@ task.spawn(function()
     end
 end)
 
+-- ═══════════════════════════════════════════════════════════
+--  Main Loop: Auto ATM
+-- ═══════════════════════════════════════════════════════════
 task.spawn(function()
     while true do
-        if not atmEnabled() then task.wait(0.5); continue end
+        if not atmEnabled() then task.wait(0.5) continue end
 
-        local holdTime = STATE.atm_hold
-        local waitTime = STATE.atm_wait
-        local player = Players.LocalPlayer
-        local char   = player.Character or Workspace:FindFirstChild(player.Name)
+        local holdTime = UI.GetValue("atm_hold") or 7
+        local waitTime = UI.GetValue("atm_wait") or 1.5
+        local char = localPlayer.Character
+        
+        pcall(function()
+            if char then for _, part in ipairs(char:GetDescendants()) do if part:IsA("BasePart") then part.CanCollide = false end end end
+            if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+            local root = char.HumanoidRootPart
 
-        local ok, err = pcall(function()
-            atm_enable_noclip()
-            if not char then return end
-            local root = char:FindFirstChild("HumanoidRootPart")
-            if not root then return end
+            if not localPlayer.Team or localPlayer.Team.Name ~= "Outlaw" then task.wait(3) return end
 
-            if not player.Team or player.Team.Name ~= "Outlaw" then
-                task.wait(3); return
-            end
-
-            local bagCount = getBagCount()
-            if bagCount >= getSellThreshold() then
-                atm_sell_bag(); return
+            if getBagCount() >= getSellThreshold() then
+                atm_sell_bag()
+                return
             end
 
             local target = atm_scan(root)
-
             if target then
                 atm_last_patrol = os.clock()
-                local dx, dy, dz = root.Position.X - target.pos.X, root.Position.Y - target.pos.Y, root.Position.Z - target.pos.Z
-                local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                if type(dist) ~= "number" then dist = 999999 end
+                local dist = (root.Position - target.pos).Magnitude
 
                 if dist > 15 then
                     atm_teleport(target.pos)
@@ -893,20 +683,22 @@ task.spawn(function()
                     end
 
                     robbed_atms_memory[target.id] = os.clock()
-
-                    local prompt = target.obj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true) or target.obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-                    if prompt and fireproximityprompt then
-                        fireproximityprompt(prompt, holdTime)
-                    end
-
                     local start_rob = os.clock()
+                    
+                    -- Start Mobile Bypass Prompt
+                    if target.prompt then pcall(function() target.prompt:InputHoldBegin() end) end
+
                     while os.clock() - start_rob < holdTime do
                         if not atmEnabled() then break end
-                        pcall(function() root.Position = stand_pos end)
-                        pcall(function() root.Velocity = Vector3.new(0, 0, 0) end)
-                        atm_enable_noclip()
+                        pcall(function() root.Position = stand_pos; root.Velocity = Vector3.zero end)
+                        
+                        -- Secondary mobile fallback
+                        if target.prompt and fireproximityprompt then fireproximityprompt(target.prompt, 1, 1) end
                         task.wait()
                     end
+                    
+                    -- End Mobile Bypass Prompt
+                    if target.prompt then pcall(function() target.prompt:InputHoldEnd() end) end
                     task.wait(waitTime)
                 end
             else
@@ -915,11 +707,14 @@ task.spawn(function()
                     atm_teleport(PatrolPoints[atm_patrol_index])
                     atm_last_patrol = os.clock()
                 end
-                if root.Velocity then root.Velocity = Vector3.new(0, 0, 0) end
+                if root.Velocity then root.Velocity = Vector3.zero end
                 task.wait(0.2)
             end
         end)
-        if not ok then task.wait(2) end
         task.wait()
     end
 end)
+
+print("[DE-Auto] Initialization complete! Finishing UI setup...")
+OrionLib:Init()
+print("[DE-Auto] Script running. The menu should be visible now.")
