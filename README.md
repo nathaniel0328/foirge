@@ -1,8 +1,7 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Smooth Cam, Manual/Auto Skip, Predictive Tracking)
+-- Standalone Auto Arrest Script (Lag Fixed, Fall TP, Manual Skip)
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local localPlayer = Players.LocalPlayer
@@ -26,7 +25,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Smooth Camera & Manual Skip",
+   LoadingSubtitle = "Lag Free & Fall Method",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -34,7 +33,6 @@ local Window = Rayfield:CreateWindow({
    }
 })
 
--- Global flag for manual skipping
 local manualSkipFlag = false
 
 function UI.AddTab(tabName, callback)
@@ -177,7 +175,7 @@ end
 --  Team & Core Helpers
 -- ═══════════════════════════════════════════════════════════
 local joinSecurityTeam
-local targetBlacklist = {} -- Stores ignored players temporarily
+local targetBlacklist = {}
 
 local function isOutlaw(player)
     local team = player.Team
@@ -229,7 +227,7 @@ local function teleportTo(targetPosition)
     
     local finalPos
     if useFallTP() then
-        -- Smooth fall: just place slightly above them and let natural gravity take over
+        -- Smooth fall: Teleports 3 studs above without locking the engine
         finalPos = targetPosition + Vector3.new(0, 3, 0)
     else
         finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
@@ -245,25 +243,13 @@ local function teleportTo(targetPosition)
     
     rootPart.CFrame = CFrame.new(finalPos)
     
-    -- Smooth velocity fix: We just nullify horizontal momentum to stay above them
     local currentVel = rootPart.AssemblyLinearVelocity
     if useFallTP() then
-        rootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(currentVel.Y, -10), 0)
+        -- Allow downward velocity but stop upward bouncing
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(currentVel.Y, 0), 0)
     else
         rootPart.AssemblyLinearVelocity = Vector3.zero
     end
-    
-    -- Auto prompt fire
-    pcall(function()
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("ProximityPrompt") and obj.Enabled then
-                local dist = (obj.Parent.Position - rootPart.Position).Magnitude
-                if dist < 10 then
-                    fireproximityprompt(obj)
-                end
-            end
-        end
-    end)
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -274,11 +260,9 @@ UI.AddTab("Auto Arrest", function(tab)
     ctrl:Toggle("oh_enabled", "Enable Script", false)
     ctrl:Toggle("oh_fall_tp", "Smooth Fall Teleport", true)
     
-    -- Manual Skip Button
     ctrl:Button("Skip Current Target", function()
         manualSkipFlag = true
     end)
-    ctrl:Tip("Instantly ignores the current player and moves to the next.")
     
     ctrl:Button("Get Security Team", function()
         task.spawn(joinSecurityTeam)
@@ -287,7 +271,6 @@ UI.AddTab("Auto Arrest", function(tab)
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
     
-    -- Auto Skip Toggle & Slider
     settings:Toggle("oh_auto_skip", "Auto Skip Targets", true)
     settings:SliderInt("oh_timeout", "Auto Skip After (s)", 5, 60, 15)
     
@@ -380,12 +363,9 @@ local function getOutlaws()
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localPlayer and isOutlaw(player) then
-            -- Check Blacklist
             if targetBlacklist[player.UserId] and currentTime < targetBlacklist[player.UserId] then
                 continue 
             end
-            
-            -- Filter by bounty
             if getPlayerBounty(player) >= minBounty then
                 table.insert(outlaws, player)
             end
@@ -435,38 +415,33 @@ local function getClosestOutlaw()
 end
 
 local trackingTarget, trackingActive = nil, false
-local trackingConnection = nil
 
 local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
-        if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
-            trackingActive = false
-            if trackingConnection then 
-                trackingConnection:Disconnect() 
-                trackingConnection = nil
-            end
-            return
-        end
-        
-        disableCollisions() -- Prevents camera bouncing off the target's geometry
-        
-        if trackingTarget.Character then
-            local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
-            if rp then
-                local currentPos = rp.Position
-                if memory_read then
-                    local cf = read_cframe(rp)
-                    if cf then currentPos = cf.pos end
+    task.spawn(function()
+        while trackingActive and isOutlaw(trackingTarget) and secEnabled() do
+            disableCollisions()
+            
+            if trackingTarget.Character then
+                local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
+                if rp then
+                    local currentPos = rp.Position
+                    if memory_read then
+                        local cf = read_cframe(rp)
+                        if cf then currentPos = cf.pos end
+                    end
+                    
+                    local targetVelocity = rp.AssemblyLinearVelocity
+                    local predictedPos = currentPos + (targetVelocity * getPrediction())
+                    
+                    teleportTo(predictedPos)
                 end
-                
-                local targetVelocity = rp.AssemblyLinearVelocity
-                local predictedPos = currentPos + (targetVelocity * getPrediction())
-                
-                teleportTo(predictedPos)
             end
+            
+            -- Changed from Heartbeat back to a task.wait loop to fix the severe lag
+            task.wait(0.05) 
         end
     end)
 end
@@ -474,10 +449,6 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
-    if trackingConnection then
-        trackingConnection:Disconnect()
-        trackingConnection = nil
-    end
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -501,7 +472,7 @@ task.spawn(function()
         end
 
         stopTracking()
-        manualSkipFlag = false -- Reset manual skip at the start of search
+        manualSkipFlag = false
 
         local outlaws = getOutlaws()
         if #outlaws == 0 then
@@ -524,9 +495,8 @@ task.spawn(function()
         
         while isOutlaw(target) do
             if not secEnabled() then break end
-            if manualSkipFlag then break end -- Break loop if button is pressed
+            if manualSkipFlag then break end
             
-            -- Check Auto Skip if toggle is enabled
             if UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15) then
                 break
             end
@@ -535,7 +505,6 @@ task.spawn(function()
             waitTime = waitTime + 0.1
         end
 
-        -- If they were manually skipped or auto-skipped, blacklist them
         if manualSkipFlag or (UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15)) then
             if target and isOutlaw(target) then
                 Rayfield:Notify({Title = "Auto Arrest", Content = "Skipping " .. target.Name, Duration = 3})
