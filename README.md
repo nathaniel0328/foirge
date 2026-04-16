@@ -1,7 +1,8 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Lag Fixed, Fall TP, Manual Skip)
+-- Standalone Auto Arrest Script (Restored Ping Prediction, Lag-Free, Manual Skip)
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local localPlayer = Players.LocalPlayer
@@ -25,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Lag Free & Fall Method",
+   LoadingSubtitle = "Predictive Ping Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -227,7 +228,7 @@ local function teleportTo(targetPosition)
     
     local finalPos
     if useFallTP() then
-        -- Smooth fall: Teleports 3 studs above without locking the engine
+        -- Smooth fall: Place them 3 studs above to trigger the touch safely
         finalPos = targetPosition + Vector3.new(0, 3, 0)
     else
         finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
@@ -245,7 +246,6 @@ local function teleportTo(targetPosition)
     
     local currentVel = rootPart.AssemblyLinearVelocity
     if useFallTP() then
-        -- Allow downward velocity but stop upward bouncing
         rootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(currentVel.Y, 0), 0)
     else
         rootPart.AssemblyLinearVelocity = Vector3.zero
@@ -415,33 +415,40 @@ local function getClosestOutlaw()
 end
 
 local trackingTarget, trackingActive = nil, false
+local trackingConnection = nil
 
 local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    task.spawn(function()
-        while trackingActive and isOutlaw(trackingTarget) and secEnabled() do
-            disableCollisions()
-            
-            if trackingTarget.Character then
-                local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
-                if rp then
-                    local currentPos = rp.Position
-                    if memory_read then
-                        local cf = read_cframe(rp)
-                        if cf then currentPos = cf.pos end
-                    end
-                    
-                    local targetVelocity = rp.AssemblyLinearVelocity
-                    local predictedPos = currentPos + (targetVelocity * getPrediction())
-                    
-                    teleportTo(predictedPos)
-                end
+    -- Restored Heartbeat loop for buttery smooth Ping Prediction tracking
+    trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
+            trackingActive = false
+            if trackingConnection then 
+                trackingConnection:Disconnect() 
+                trackingConnection = nil
             end
-            
-            -- Changed from Heartbeat back to a task.wait loop to fix the severe lag
-            task.wait(0.05) 
+            return
+        end
+        
+        disableCollisions()
+        
+        if trackingTarget.Character then
+            local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
+            if rp then
+                local currentPos = rp.Position
+                if memory_read then
+                    local cf = read_cframe(rp)
+                    if cf then currentPos = cf.pos end
+                end
+                
+                -- Ping prediction calculation
+                local targetVelocity = rp.AssemblyLinearVelocity
+                local predictedPos = currentPos + (targetVelocity * getPrediction())
+                
+                teleportTo(predictedPos)
+            end
         end
     end)
 end
@@ -449,6 +456,10 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
+    if trackingConnection then
+        trackingConnection:Disconnect()
+        trackingConnection = nil
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════
