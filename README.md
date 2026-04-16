@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script
+-- Standalone Auto Arrest Script (Improved Tracking & Server Sync)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -24,9 +24,9 @@ end
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
-   Name = "Auto Arrest Only",
+   Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Mobile Supported",
+   LoadingSubtitle = "Predictive Tracking Active",
    ConfigurationSaving = { Enabled = false }
 })
 
@@ -64,6 +64,18 @@ function UI.AddTab(tabName, callback)
             })
         end
         
+        function sectionObj:SliderFloat(id, name, min, max, default, format)
+            uiValues[id] = default
+            uiElements[id] = tab:CreateSlider({
+                Name = name,
+                Range = {min, max},
+                Increment = 0.05,
+                CurrentValue = default,
+                Flag = id,
+                Callback = function(val) uiValues[id] = val end
+            })
+        end
+        
         function sectionObj:Tip(text)
             tab:CreateLabel(text)
         end
@@ -75,7 +87,7 @@ function UI.AddTab(tabName, callback)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Original Script Memory & Offsets
+--  Memory & Offsets
 -- ═══════════════════════════════════════════════════════════
 local offsets = {
     base_part = { primitive = 0x148 },
@@ -178,7 +190,8 @@ local function isSecurity(player)
 end
 
 local function secEnabled() return UI.GetValue("oh_enabled") end
-local function getYOffset() return UI.GetValue("oh_offset") or 20 end
+local function getYOffset() return UI.GetValue("oh_offset") or -2 end
+local function getPrediction() return UI.GetValue("oh_predict") or 0.15 end
 
 local function teleportTo(targetPosition)
     local character = localPlayer.Character
@@ -186,16 +199,21 @@ local function teleportTo(targetPosition)
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
     
+    -- Apply the offset exactly without arbitrary +3 height
+    local finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
+    
     if memory_read and memory_write then
         local sourceCFrame = read_cframe(rootPart)
-        if not sourceCFrame then return end
-        sourceCFrame.pos = targetPosition + Vector3.new(0, 3 + getYOffset(), 0)
-        write_cframe(rootPart, sourceCFrame)
-        cancel_velocity(rootPart)
-    else
-        rootPart.CFrame = CFrame.new(targetPosition + Vector3.new(0, 3 + getYOffset(), 0))
-        rootPart.Velocity = Vector3.zero
+        if sourceCFrame then
+            sourceCFrame.pos = finalPos
+            write_cframe(rootPart, sourceCFrame)
+            cancel_velocity(rootPart)
+        end
     end
+    
+    -- Sync standard CFrame so the server registers your position immediately to avoid arrest delay
+    rootPart.CFrame = CFrame.new(finalPos)
+    rootPart.AssemblyLinearVelocity = Vector3.zero
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -210,8 +228,11 @@ UI.AddTab("Auto Arrest", function(tab)
     end)
 
     local settings = tab:Section("Settings", "Right")
-    settings:SliderInt("oh_offset", "Y Offset (studs)", -50, 50, 20)
-    settings:Tip("Adjusts the vertical teleport offset when tracking an outlaw")
+    settings:SliderInt("oh_offset", "Y Offset (studs)", -10, 10, -2)
+    settings:Tip("Set to -2 to teleport directly into the target.")
+    
+    settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
+    settings:Tip("Predicts target position. High ping? Raise this.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -224,7 +245,7 @@ local function joinSecurityPad()
         local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
         if char and char:FindFirstChild("HumanoidRootPart") then
             char.HumanoidRootPart.Position = pos
-            char.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+            char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
         end
     end
 
@@ -343,43 +364,38 @@ local function getClosestOutlaw()
 end
 
 local trackingTarget, trackingActive = nil, false
+local trackingConnection = nil
 
 local function startTracking(target)
     trackingTarget = target
     trackingActive = true
-    task.spawn(function()
-        local lastPos = nil
-        local oX, oY, oZ = 0, 0, 0
-        while trackingActive and isOutlaw(trackingTarget) do
-            if not secEnabled() then
-                task.wait(0.2)
-                lastPos = nil; oX, oY, oZ = 0, 0, 0
-                continue
+    
+    -- Use Heartbeat for precise frame-by-frame updates and smoother prediction
+    trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
+        if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
+            trackingActive = false
+            if trackingConnection then 
+                trackingConnection:Disconnect() 
+                trackingConnection = nil
             end
-            if trackingTarget.Character then
-                local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
-                if rp then
-                    local cur = rp.Position
-                    if memory_read then
-                        local cf = read_cframe(rp)
-                        if cf then cur = cf.pos end
-                    end
-                    
-                    if lastPos then
-                        local dx, dy, dz = cur.X-lastPos.X, cur.Y-lastPos.Y, cur.Z-lastPos.Z
-                        local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                        if dist > 1 then
-                            local spd = math.min(dist * 15, 50)
-                            oX, oY, oZ = (dx/dist)*spd, (dy/dist)*spd, (dz/dist)*spd
-                        elseif dist < 0.1 then
-                            oX, oY, oZ = 0, 0, 0
-                        end
-                    end
-                    lastPos = cur
-                    teleportTo(Vector3.new(cur.X+oX, cur.Y+oY, cur.Z+oZ))
+            return
+        end
+        
+        if trackingTarget.Character then
+            local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
+            if rp then
+                local currentPos = rp.Position
+                if memory_read then
+                    local cf = read_cframe(rp)
+                    if cf then currentPos = cf.pos end
                 end
+                
+                -- Smarter Prediction based on actual physics velocity and ping compensation
+                local targetVelocity = rp.AssemblyLinearVelocity
+                local predictedPos = currentPos + (targetVelocity * getPrediction())
+                
+                teleportTo(predictedPos)
             end
-            task.wait()
         end
     end)
 end
@@ -387,6 +403,10 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
+    if trackingConnection then
+        trackingConnection:Disconnect()
+        trackingConnection = nil
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -420,9 +440,6 @@ task.spawn(function()
         local target = getClosestOutlaw()
         if not target then task.wait(2) continue end
 
-        local memPos = getPositionFromMemory(target)
-        if memPos then teleportTo(memPos) end
-
         local rootPart = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         if not rootPart then
             task.wait(1)
@@ -439,6 +456,6 @@ task.spawn(function()
         end
 
         stopTracking()
-        task.wait(3)
+        task.wait(2)
     end
 end)
