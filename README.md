@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Improved Tracking & Server Sync)
+-- Standalone Auto Arrest Script (Predictive Tracking, Fall TP, Bounty Filter, Auto-Save)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,7 +8,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local localPlayer = Players.LocalPlayer
 
 -- ═══════════════════════════════════════════════════════════
---  UI Library Wrapper
+--  UI Library Wrapper & Auto-Save Setup
 -- ═══════════════════════════════════════════════════════════
 local UI = {}
 local uiValues = {}
@@ -26,8 +26,12 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Predictive Tracking Active",
-   ConfigurationSaving = { Enabled = false }
+   LoadingSubtitle = "Predictive Tracking & Auto Save",
+   ConfigurationSaving = { 
+       Enabled = true,
+       FolderName = "AutoArrestDE",
+       FileName = "ArrestSettings"
+   }
 })
 
 function UI.AddTab(tabName, callback)
@@ -80,7 +84,6 @@ function UI.AddTab(tabName, callback)
             tab:CreateLabel(text)
         end
         
-        function sectionObj:Spacing() end
         return sectionObj
     end
     callback(tabBuilder)
@@ -145,13 +148,6 @@ local function write_cframe(part, cframe)
     write_fvector3(prim, offsets.primitive.cframe + 0x24, cframe.pos)
 end
 
-local function cancel_velocity(part)
-    if not memory_read or not memory_write then return end
-    local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-    if prim == 0 then return end
-    write_fvector3(prim, offsets.primitive.velocity, Vector3.new(0, 0, 0))
-end
-
 -- ═══════════════════════════════════════════════════════════
 --  Mobile Helpers
 -- ═══════════════════════════════════════════════════════════
@@ -192,6 +188,25 @@ end
 local function secEnabled() return UI.GetValue("oh_enabled") end
 local function getYOffset() return UI.GetValue("oh_offset") or -2 end
 local function getPrediction() return UI.GetValue("oh_predict") or 0.15 end
+local function getMinBounty() return UI.GetValue("oh_min_bounty") or 0 end
+local function useFallTP() return UI.GetValue("oh_fall_tp") end
+
+local function getPlayerBounty(player)
+    local bounty = 0
+    pcall(function()
+        -- Checks standard leaderstats first
+        if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Bounty") then
+            bounty = tonumber(player.leaderstats.Bounty.Value) or 0
+        else
+            -- Failsafe: Searches for any value named Bounty
+            local b = player:FindFirstChild("Bounty", true)
+            if b and (b:IsA("IntValue") or b:IsA("NumberValue")) then
+                bounty = tonumber(b.Value) or 0
+            end
+        end
+    end)
+    return bounty
+end
 
 local function teleportTo(targetPosition)
     local character = localPlayer.Character
@@ -199,21 +214,45 @@ local function teleportTo(targetPosition)
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
     
-    -- Apply the offset exactly without arbitrary +3 height
-    local finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
+    local finalPos
+    if useFallTP() then
+        -- Teleport slightly above them to allow falling
+        finalPos = targetPosition + Vector3.new(0, 3, 0)
+    else
+        -- Use standard offset
+        finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
+    end
     
+    -- Memory writing for smooth local teleportation
     if memory_read and memory_write then
         local sourceCFrame = read_cframe(rootPart)
         if sourceCFrame then
             sourceCFrame.pos = finalPos
             write_cframe(rootPart, sourceCFrame)
-            cancel_velocity(rootPart)
         end
     end
     
-    -- Sync standard CFrame so the server registers your position immediately to avoid arrest delay
+    -- Sync CFrame for the Server
     rootPart.CFrame = CFrame.new(finalPos)
-    rootPart.AssemblyLinearVelocity = Vector3.zero
+    
+    if useFallTP() then
+        -- Force downward velocity to trigger the Touched event instantly
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, -50, 0)
+    else
+        rootPart.AssemblyLinearVelocity = Vector3.zero
+    end
+    
+    -- Auto-trigger Proximity Prompts on target if DE uses them for arrests
+    pcall(function()
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("ProximityPrompt") and obj.Enabled then
+                local dist = (obj.Parent.Position - rootPart.Position).Magnitude
+                if dist < 10 then
+                    fireproximityprompt(obj)
+                end
+            end
+        end
+    end)
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -222,17 +261,20 @@ end
 UI.AddTab("Auto Arrest", function(tab)
     local ctrl = tab:Section("Controls", "Left")
     ctrl:Toggle("oh_enabled", "Enable Script", false)
-    ctrl:Spacing()
+    ctrl:Toggle("oh_fall_tp", "Fall Teleport (Fixes Delay)", true)
+    ctrl:Tip("Forces you to fall onto the player, bypassing touch delay.")
     ctrl:Button("Get Security Team", function()
         task.spawn(joinSecurityTeam)
     end)
 
     local settings = tab:Section("Settings", "Right")
-    settings:SliderInt("oh_offset", "Y Offset (studs)", -10, 10, -2)
-    settings:Tip("Set to -2 to teleport directly into the target.")
+    settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
+    settings:Tip("Will only track outlaws with this much bounty or higher.")
+    
+    settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
+    settings:Tip("Only applies if Fall Teleport is OFF.")
     
     settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
-    settings:Tip("Predicts target position. High ping? Raise this.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -315,9 +357,14 @@ end
 -- ═══════════════════════════════════════════════════════════
 local function getOutlaws()
     local outlaws = {}
+    local minBounty = getMinBounty()
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localPlayer and isOutlaw(player) then
-            table.insert(outlaws, player)
+            -- Filter by bounty
+            if getPlayerBounty(player) >= minBounty then
+                table.insert(outlaws, player)
+            end
         end
     end
     return outlaws
@@ -370,7 +417,7 @@ local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Use Heartbeat for precise frame-by-frame updates and smoother prediction
+    -- Heartbeat loop for predictive, instant updating
     trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
@@ -390,7 +437,6 @@ local function startTracking(target)
                     if cf then currentPos = cf.pos end
                 end
                 
-                -- Smarter Prediction based on actual physics velocity and ping compensation
                 local targetVelocity = rp.AssemblyLinearVelocity
                 local predictedPos = currentPos + (targetVelocity * getPrediction())
                 
@@ -456,6 +502,6 @@ task.spawn(function()
         end
 
         stopTracking()
-        task.wait(2)
+        task.wait(1) -- Reduced wait time after an arrest for faster chain-catching
     end
 end)
