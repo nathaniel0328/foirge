@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Ultimate Velocity-Match Tracking, No Auto-Skip)
+-- Standalone Auto Arrest Script (Ultimate Stepped Pivot Tracking, Vehicle Detection)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Velocity-Match Tracking Active",
+   LoadingSubtitle = "Ultimate Tracking Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -219,32 +219,41 @@ local function disableCollisions()
     end
 end
 
--- The "Best" Teleport Method
-local function teleportToAdvanced(targetPart, predictionPing)
+-- ═══════════════════════════════════════════════════════════
+--  Ultimate Teleport (Vehicle Detection + PivotTo)
+-- ═══════════════════════════════════════════════════════════
+local function teleportToUltimate(targetPlayer, targetPart, predictionPing)
     local character = localPlayer.Character
     if not character then return end
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
     
-    -- 1. Read Target Data
     local targetPos = targetPart.Position
     local targetRot = targetPart.CFrame.Rotation
     local targetVelocity = targetPart.AssemblyLinearVelocity
+    
+    -- VEHICLE PHYSICS CHECK: Overrides player velocity with car velocity if seated
+    local humanoid = targetPlayer.Character and targetPlayer.Character:FindFirstChild("Humanoid")
+    if humanoid and humanoid.SeatPart then
+        local vehicle = humanoid.SeatPart:FindFirstAncestorWhichIsA("Model")
+        if vehicle and vehicle.PrimaryPart then
+            targetVelocity = vehicle.PrimaryPart.AssemblyLinearVelocity
+        else
+            targetVelocity = humanoid.SeatPart.AssemblyLinearVelocity
+        end
+    end
     
     if memory_read then
         local cf = read_cframe(targetPart)
         if cf then targetPos = cf.pos end
     end
     
-    -- 2. Calculate Predicted Future Position
+    -- Future Prediction Calculation
     local predictedPos = targetPos + (targetVelocity * predictionPing)
-    
-    -- 3. Calculate Relative Rotation Offset
-    -- This keeps you attached to their car roof/body perfectly even if they go up a hill
     local offsetCFrame = CFrame.new(0, getYOffset(), 0)
     local finalCFrame = CFrame.new(predictedPos) * targetRot * offsetCFrame
     
-    -- 4. Apply Memory Write (Zero latency visual teleport)
+    -- Memory Write for visual latency fixing
     if memory_read and memory_write then
         local mySourceCFrame = read_cframe(rootPart)
         if mySourceCFrame then
@@ -253,10 +262,8 @@ local function teleportToAdvanced(targetPart, predictionPing)
         end
     end
     
-    -- 5. Apply Server Sync with VELOCITY MATCHING
-    -- By setting our velocity to match theirs, the server connects the dots between frames,
-    -- allowing the 5-second timer to stay completely uninterrupted.
-    rootPart.CFrame = finalCFrame
+    -- PivotTo moves the entire character instantly without tearing joints
+    character:PivotTo(finalCFrame)
     rootPart.AssemblyLinearVelocity = targetVelocity 
 end
 
@@ -280,7 +287,7 @@ UI.AddTab("Auto Arrest", function(tab)
     
     settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
     settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
-    settings:Tip("Prediction calculates velocity. Offset moves you relative to their car.")
+    settings:Tip("Calculates car velocity and pivots your assembly.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -292,7 +299,7 @@ local function joinSecurityPad()
     local function rawTeleport(pos)
         local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
         if char and char:FindFirstChild("HumanoidRootPart") then
-            char.HumanoidRootPart.Position = pos
+            char:PivotTo(CFrame.new(pos))
             char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
         end
     end
@@ -363,7 +370,7 @@ end
 -- ═══════════════════════════════════════════════════════════
 local function getOutlaws()
     local outlaws = {}
-    local minBounty = getMinBounty()
+    local minBounty = math.max(1, getMinBounty()) 
     local currentTime = os.clock()
     
     for _, player in ipairs(Players:GetPlayers()) do
@@ -426,8 +433,9 @@ local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Heartbeat loop ensures flawless physics-frame updating
-    trackingConnection = RunService.Heartbeat:Connect(function()
+    -- Changed from Heartbeat to Stepped. Stepped runs BEFORE physics calculate.
+    -- This means the engine won't try to bounce you out of the car before teleporting you back in.
+    trackingConnection = RunService.Stepped:Connect(function()
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
             if trackingConnection then 
@@ -442,7 +450,7 @@ local function startTracking(target)
         if trackingTarget.Character then
             local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
             if rp then
-                teleportToAdvanced(rp, getPrediction())
+                teleportToUltimate(trackingTarget, rp, getPrediction())
             end
         end
     end)
@@ -487,25 +495,29 @@ task.spawn(function()
         end
 
         local target = getClosestOutlaw()
-        if not target then task.wait(2) continue end
+        if not target then task.wait(0.5) continue end
 
-        local rootPart = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        local targetChar = target.Character
+        local rootPart = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
         if not rootPart then
-            task.wait(1)
+            task.wait(0.5)
             continue
         end
 
         startTracking(target)
 
-        -- Relentless tracking loop (no auto skip)
-        while isOutlaw(target) do
+        while isOutlaw(target) and target.Character == targetChar do
             if not secEnabled() then break end
             if manualSkipFlag then break end
+            
+            local currentBounty = getPlayerBounty(target)
+            if currentBounty == 0 or currentBounty < getMinBounty() then
+                break
+            end
             
             task.wait(0.1)
         end
 
-        -- Blacklist ONLY on manual skip
         if manualSkipFlag then
             if target and isOutlaw(target) then
                 Rayfield:Notify({Title = "Auto Arrest", Content = "Manually Skipped " .. target.Name, Duration = 3})
@@ -515,6 +527,6 @@ task.spawn(function()
 
         manualSkipFlag = false
         stopTracking()
-        task.wait(1)
+        task.wait(0.1)
     end
 end)
