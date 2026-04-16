@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Restored Ping Prediction, Lag-Free, Manual Skip)
+-- Standalone Auto Arrest Script (Ultimate Velocity-Match Tracking, No Auto-Skip)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Predictive Ping Active",
+   LoadingSubtitle = "Velocity-Match Tracking Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -192,7 +192,6 @@ local function secEnabled() return UI.GetValue("oh_enabled") end
 local function getYOffset() return UI.GetValue("oh_offset") or -2 end
 local function getPrediction() return UI.GetValue("oh_predict") or 0.15 end
 local function getMinBounty() return UI.GetValue("oh_min_bounty") or 0 end
-local function useFallTP() return UI.GetValue("oh_fall_tp") end
 
 local function getPlayerBounty(player)
     local bounty = 0
@@ -220,36 +219,45 @@ local function disableCollisions()
     end
 end
 
-local function teleportTo(targetPosition)
+-- The "Best" Teleport Method
+local function teleportToAdvanced(targetPart, predictionPing)
     local character = localPlayer.Character
     if not character then return end
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
     
-    local finalPos
-    if useFallTP() then
-        -- Smooth fall: Place them 3 studs above to trigger the touch safely
-        finalPos = targetPosition + Vector3.new(0, 3, 0)
-    else
-        finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
+    -- 1. Read Target Data
+    local targetPos = targetPart.Position
+    local targetRot = targetPart.CFrame.Rotation
+    local targetVelocity = targetPart.AssemblyLinearVelocity
+    
+    if memory_read then
+        local cf = read_cframe(targetPart)
+        if cf then targetPos = cf.pos end
     end
     
+    -- 2. Calculate Predicted Future Position
+    local predictedPos = targetPos + (targetVelocity * predictionPing)
+    
+    -- 3. Calculate Relative Rotation Offset
+    -- This keeps you attached to their car roof/body perfectly even if they go up a hill
+    local offsetCFrame = CFrame.new(0, getYOffset(), 0)
+    local finalCFrame = CFrame.new(predictedPos) * targetRot * offsetCFrame
+    
+    -- 4. Apply Memory Write (Zero latency visual teleport)
     if memory_read and memory_write then
-        local sourceCFrame = read_cframe(rootPart)
-        if sourceCFrame then
-            sourceCFrame.pos = finalPos
-            write_cframe(rootPart, sourceCFrame)
+        local mySourceCFrame = read_cframe(rootPart)
+        if mySourceCFrame then
+            mySourceCFrame.pos = finalCFrame.Position
+            write_cframe(rootPart, mySourceCFrame)
         end
     end
     
-    rootPart.CFrame = CFrame.new(finalPos)
-    
-    local currentVel = rootPart.AssemblyLinearVelocity
-    if useFallTP() then
-        rootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(currentVel.Y, 0), 0)
-    else
-        rootPart.AssemblyLinearVelocity = Vector3.zero
-    end
+    -- 5. Apply Server Sync with VELOCITY MATCHING
+    -- By setting our velocity to match theirs, the server connects the dots between frames,
+    -- allowing the 5-second timer to stay completely uninterrupted.
+    rootPart.CFrame = finalCFrame
+    rootPart.AssemblyLinearVelocity = targetVelocity 
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -258,7 +266,6 @@ end
 UI.AddTab("Auto Arrest", function(tab)
     local ctrl = tab:Section("Controls", "Left")
     ctrl:Toggle("oh_enabled", "Enable Script", false)
-    ctrl:Toggle("oh_fall_tp", "Smooth Fall Teleport", true)
     
     ctrl:Button("Skip Current Target", function()
         manualSkipFlag = true
@@ -271,11 +278,9 @@ UI.AddTab("Auto Arrest", function(tab)
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
     
-    settings:Toggle("oh_auto_skip", "Auto Skip Targets", true)
-    settings:SliderInt("oh_timeout", "Auto Skip After (s)", 5, 60, 15)
-    
     settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
     settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
+    settings:Tip("Prediction calculates velocity. Offset moves you relative to their car.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -421,8 +426,8 @@ local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Restored Heartbeat loop for buttery smooth Ping Prediction tracking
-    trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
+    -- Heartbeat loop ensures flawless physics-frame updating
+    trackingConnection = RunService.Heartbeat:Connect(function()
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
             if trackingConnection then 
@@ -437,17 +442,7 @@ local function startTracking(target)
         if trackingTarget.Character then
             local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
             if rp then
-                local currentPos = rp.Position
-                if memory_read then
-                    local cf = read_cframe(rp)
-                    if cf then currentPos = cf.pos end
-                end
-                
-                -- Ping prediction calculation
-                local targetVelocity = rp.AssemblyLinearVelocity
-                local predictedPos = currentPos + (targetVelocity * getPrediction())
-                
-                teleportTo(predictedPos)
+                teleportToAdvanced(rp, getPrediction())
             end
         end
     end)
@@ -502,23 +497,18 @@ task.spawn(function()
 
         startTracking(target)
 
-        local waitTime = 0
-        
+        -- Relentless tracking loop (no auto skip)
         while isOutlaw(target) do
             if not secEnabled() then break end
             if manualSkipFlag then break end
             
-            if UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15) then
-                break
-            end
-            
             task.wait(0.1)
-            waitTime = waitTime + 0.1
         end
 
-        if manualSkipFlag or (UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15)) then
+        -- Blacklist ONLY on manual skip
+        if manualSkipFlag then
             if target and isOutlaw(target) then
-                Rayfield:Notify({Title = "Auto Arrest", Content = "Skipping " .. target.Name, Duration = 3})
+                Rayfield:Notify({Title = "Auto Arrest", Content = "Manually Skipped " .. target.Name, Duration = 3})
                 targetBlacklist[target.UserId] = os.clock() + 30 
             end
         end
