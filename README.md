@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Predictive Tracking, Fall TP, Bounty Filter, Auto-Save)
+-- Standalone Auto Arrest Script (Smooth Cam, Manual/Auto Skip, Predictive Tracking)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,13 +26,16 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Predictive Tracking & Auto Save",
+   LoadingSubtitle = "Smooth Camera & Manual Skip",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
        FileName = "ArrestSettings"
    }
 })
+
+-- Global flag for manual skipping
+local manualSkipFlag = false
 
 function UI.AddTab(tabName, callback)
     local tab = Window:CreateTab(tabName)
@@ -174,6 +177,7 @@ end
 --  Team & Core Helpers
 -- ═══════════════════════════════════════════════════════════
 local joinSecurityTeam
+local targetBlacklist = {} -- Stores ignored players temporarily
 
 local function isOutlaw(player)
     local team = player.Team
@@ -194,11 +198,9 @@ local function useFallTP() return UI.GetValue("oh_fall_tp") end
 local function getPlayerBounty(player)
     local bounty = 0
     pcall(function()
-        -- Checks standard leaderstats first
         if player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Bounty") then
             bounty = tonumber(player.leaderstats.Bounty.Value) or 0
         else
-            -- Failsafe: Searches for any value named Bounty
             local b = player:FindFirstChild("Bounty", true)
             if b and (b:IsA("IntValue") or b:IsA("NumberValue")) then
                 bounty = tonumber(b.Value) or 0
@@ -206,6 +208,17 @@ local function getPlayerBounty(player)
         end
     end)
     return bounty
+end
+
+local function disableCollisions()
+    local char = localPlayer.Character
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
 end
 
 local function teleportTo(targetPosition)
@@ -216,14 +229,12 @@ local function teleportTo(targetPosition)
     
     local finalPos
     if useFallTP() then
-        -- Teleport slightly above them to allow falling
+        -- Smooth fall: just place slightly above them and let natural gravity take over
         finalPos = targetPosition + Vector3.new(0, 3, 0)
     else
-        -- Use standard offset
         finalPos = targetPosition + Vector3.new(0, getYOffset(), 0)
     end
     
-    -- Memory writing for smooth local teleportation
     if memory_read and memory_write then
         local sourceCFrame = read_cframe(rootPart)
         if sourceCFrame then
@@ -232,17 +243,17 @@ local function teleportTo(targetPosition)
         end
     end
     
-    -- Sync CFrame for the Server
     rootPart.CFrame = CFrame.new(finalPos)
     
+    -- Smooth velocity fix: We just nullify horizontal momentum to stay above them
+    local currentVel = rootPart.AssemblyLinearVelocity
     if useFallTP() then
-        -- Force downward velocity to trigger the Touched event instantly
-        rootPart.AssemblyLinearVelocity = Vector3.new(0, -50, 0)
+        rootPart.AssemblyLinearVelocity = Vector3.new(0, math.min(currentVel.Y, -10), 0)
     else
         rootPart.AssemblyLinearVelocity = Vector3.zero
     end
     
-    -- Auto-trigger Proximity Prompts on target if DE uses them for arrests
+    -- Auto prompt fire
     pcall(function()
         for _, obj in ipairs(Workspace:GetDescendants()) do
             if obj:IsA("ProximityPrompt") and obj.Enabled then
@@ -261,19 +272,26 @@ end
 UI.AddTab("Auto Arrest", function(tab)
     local ctrl = tab:Section("Controls", "Left")
     ctrl:Toggle("oh_enabled", "Enable Script", false)
-    ctrl:Toggle("oh_fall_tp", "Fall Teleport (Fixes Delay)", true)
-    ctrl:Tip("Forces you to fall onto the player, bypassing touch delay.")
+    ctrl:Toggle("oh_fall_tp", "Smooth Fall Teleport", true)
+    
+    -- Manual Skip Button
+    ctrl:Button("Skip Current Target", function()
+        manualSkipFlag = true
+    end)
+    ctrl:Tip("Instantly ignores the current player and moves to the next.")
+    
     ctrl:Button("Get Security Team", function()
         task.spawn(joinSecurityTeam)
     end)
 
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
-    settings:Tip("Will only track outlaws with this much bounty or higher.")
+    
+    -- Auto Skip Toggle & Slider
+    settings:Toggle("oh_auto_skip", "Auto Skip Targets", true)
+    settings:SliderInt("oh_timeout", "Auto Skip After (s)", 5, 60, 15)
     
     settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
-    settings:Tip("Only applies if Fall Teleport is OFF.")
-    
     settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
 end)
 
@@ -358,9 +376,15 @@ end
 local function getOutlaws()
     local outlaws = {}
     local minBounty = getMinBounty()
+    local currentTime = os.clock()
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localPlayer and isOutlaw(player) then
+            -- Check Blacklist
+            if targetBlacklist[player.UserId] and currentTime < targetBlacklist[player.UserId] then
+                continue 
+            end
+            
             -- Filter by bounty
             if getPlayerBounty(player) >= minBounty then
                 table.insert(outlaws, player)
@@ -417,7 +441,6 @@ local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Heartbeat loop for predictive, instant updating
     trackingConnection = RunService.Heartbeat:Connect(function(deltaTime)
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
@@ -427,6 +450,8 @@ local function startTracking(target)
             end
             return
         end
+        
+        disableCollisions() -- Prevents camera bouncing off the target's geometry
         
         if trackingTarget.Character then
             local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
@@ -476,6 +501,7 @@ task.spawn(function()
         end
 
         stopTracking()
+        manualSkipFlag = false -- Reset manual skip at the start of search
 
         local outlaws = getOutlaws()
         if #outlaws == 0 then
@@ -494,14 +520,31 @@ task.spawn(function()
 
         startTracking(target)
 
-        local waitTime, timeout = 0, 30
-        while isOutlaw(target) and waitTime < timeout do
+        local waitTime = 0
+        
+        while isOutlaw(target) do
             if not secEnabled() then break end
+            if manualSkipFlag then break end -- Break loop if button is pressed
+            
+            -- Check Auto Skip if toggle is enabled
+            if UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15) then
+                break
+            end
+            
             task.wait(0.1)
             waitTime = waitTime + 0.1
         end
 
+        -- If they were manually skipped or auto-skipped, blacklist them
+        if manualSkipFlag or (UI.GetValue("oh_auto_skip") and waitTime >= (UI.GetValue("oh_timeout") or 15)) then
+            if target and isOutlaw(target) then
+                Rayfield:Notify({Title = "Auto Arrest", Content = "Skipping " .. target.Name, Duration = 3})
+                targetBlacklist[target.UserId] = os.clock() + 30 
+            end
+        end
+
+        manualSkipFlag = false
         stopTracking()
-        task.wait(1) -- Reduced wait time after an arrest for faster chain-catching
+        task.wait(1)
     end
 end)
