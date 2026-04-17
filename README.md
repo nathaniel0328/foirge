@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (LinearVelocity Homing Surf Method)
+-- Standalone Auto Arrest Script (Reliable CFrame Surf + Fixed Team Join)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Velocity Surf Active",
+   LoadingSubtitle = "Reliable CFrame Tracking",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -127,25 +127,6 @@ local function read_cframe(part)
     }
 end
 
-local function clickButton(button)
-    if getconnections then
-        for _, conn in ipairs(getconnections(button.MouseButton1Click)) do
-            pcall(function() conn:Fire() end)
-        end
-        for _, conn in ipairs(getconnections(button.Activated)) do
-            pcall(function() conn:Fire() end)
-        end
-    else
-        local absPos = button.AbsolutePosition
-        local absSize = button.AbsoluteSize
-        local x = absPos.X + absSize.X / 2
-        local y = absPos.Y + absSize.Y / 2
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
-        task.wait(0.1)
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
-    end
-end
-
 -- ═══════════════════════════════════════════════════════════
 --  Team & Core Helpers
 -- ═══════════════════════════════════════════════════════════
@@ -163,7 +144,7 @@ local function isSecurity(player)
 end
 
 local function secEnabled() return UI.GetValue("oh_enabled") end
-local function getYOffset() return UI.GetValue("oh_offset") or -2 end
+local function getYOffset() return UI.GetValue("oh_offset") or 4 end
 local function getMinBounty() return UI.GetValue("oh_min_bounty") or 0 end
 
 local function getPlayerBounty(player)
@@ -179,37 +160,6 @@ local function getPlayerBounty(player)
         end
     end)
     return bounty
-end
-
-local function prepareFlightState()
-    local char = localPlayer.Character
-    if char then
-        local humanoid = char:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.PlatformStand = true -- Prevents tripping or trying to walk
-        end
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-                part.Massless = true -- Makes us weightless for perfect flight
-            end
-        end
-    end
-end
-
-local function resetFlightState()
-    local char = localPlayer.Character
-    if char then
-        local humanoid = char:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.PlatformStand = false
-        end
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                part.Massless = false
-            end
-        end
-    end
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -229,72 +179,97 @@ UI.AddTab("Auto Arrest", function(tab)
 
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
-    settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
-    settings:Tip("Uses Velocity Surfing (Flight) to match target speed.")
+    settings:SliderInt("oh_offset", "Y Offset (Height)", 0, 15, 4)
+    settings:Tip("Keep this above 0. Teleporting inside cars breaks the timer.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  Pad Join Logic
+--  FIXED: Pad Join Logic
 -- ═══════════════════════════════════════════════════════════
+local function forceClickConfirm()
+    -- Aggressively search for the Confirm button
+    local promptUI = localPlayer.PlayerGui:FindFirstChild("PromptUI")
+    if promptUI then
+        local confirmBtn = promptUI:FindFirstChild("Confirm", true)
+        if confirmBtn and confirmBtn:IsA("GuiButton") then
+            -- Method 1: GetConnections
+            if getconnections then
+                for _, conn in ipairs(getconnections(confirmBtn.MouseButton1Click)) do
+                    pcall(function() conn:Fire() end)
+                end
+                for _, conn in ipairs(getconnections(confirmBtn.Activated)) do
+                    pcall(function() conn:Fire() end)
+                end
+            end
+            
+            -- Method 2: firesignal
+            if firesignal then
+                pcall(function() firesignal(confirmBtn.MouseButton1Click) end)
+            end
+            
+            -- Method 3: Virtual Input (Center of button)
+            local absPos = confirmBtn.AbsolutePosition
+            local absSize = confirmBtn.AbsoluteSize
+            local x = absPos.X + (absSize.X / 2)
+            local y = absPos.Y + (absSize.Y / 2)
+            VirtualInputManager:SendMouseButtonEvent(x, y + 36, 0, true, game, 1) -- +36 for topbar offset
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(x, y + 36, 0, false, game, 1)
+            
+            return true
+        end
+    end
+    return false
+end
+
 local function joinSecurityPad()
-    local PAD_AREA = Vector3.new(-109.757, 25.080, -956.793)
+    local PAD_AREA = CFrame.new(-109.757, 25.080, -956.793)
     
-    local function rawTeleport(pos)
-        local char = localPlayer.Character or Workspace:FindFirstChild(localPlayer.Name)
+    local function tpToPad(cf)
+        local char = localPlayer.Character
         if char and char:FindFirstChild("HumanoidRootPart") then
-            char:PivotTo(CFrame.new(pos))
+            char:PivotTo(cf)
             char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
         end
     end
 
     Rayfield:Notify({Title = "Security", Content = "Teleporting to Security Pad...", Duration = 3})
     
-    local renderStart = os.clock()
-    local jobContainer = nil
-    while os.clock() - renderStart < 3 do
-        rawTeleport(PAD_AREA)
-        task.wait(0.1)
-        if not jobContainer then
-            jobContainer = game.Workspace.Game.Jobs:FindFirstChild("JobPadContainer")
-        end
-    end
-
-    if not jobContainer then return false end
-    local pad = jobContainer:FindFirstChild("SecurityPad")
-    if not pad then return false end
-
-    local padPart = pad:IsA("BasePart") and pad or pad:FindFirstChildWhichIsA("BasePart", true)
-    if not padPart then return false end
+    local jobContainer = Workspace:FindFirstChild("JobPadContainer", true)
+    local padPart = nil
     
-    local holdTime = 0
-    while holdTime < 2 do
-        rawTeleport(padPart.Position + Vector3.new(0, 0.5, 0))
-        task.wait(0.1)
-        holdTime = holdTime + 0.1
+    if jobContainer then
+        local pad = jobContainer:FindFirstChild("SecurityPad")
+        padPart = pad and (pad:IsA("BasePart") and pad or pad:FindFirstChildWhichIsA("BasePart", true))
     end
 
-    task.wait(1)
-
-    local clickTime = 0
-    while not isSecurity(localPlayer) and clickTime < 10 do
-        local promptUI = localPlayer.PlayerGui:FindFirstChild("PromptUI")
-        if promptUI then
-            local v2 = promptUI:FindFirstChild("PromptV2")
-            local confirmBtn = v2 and v2:FindFirstChild("ButtonsFrame") and v2.ButtonsFrame:FindFirstChild("Confirm")
-            if confirmBtn then
-                clickButton(confirmBtn)
-            else
-                rawTeleport(padPart.Position + Vector3.new(0, 0.5, 0))
+    local targetCF = padPart and padPart.CFrame + Vector3.new(0, 3, 0) or PAD_AREA
+    
+    local attempts = 0
+    while not isSecurity(localPlayer) and attempts < 20 do
+        tpToPad(targetCF)
+        task.wait(0.2)
+        
+        -- Fire any proximity prompts just in case DE changed it
+        for _, prompt in ipairs(Workspace:GetDescendants()) do
+            if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                local dist = (prompt.Parent.Position - localPlayer.Character.HumanoidRootPart.Position).Magnitude
+                if dist < 10 then
+                    fireproximityprompt(prompt)
+                end
             end
         end
-        task.wait(0.5)
-        clickTime = clickTime + 0.5
+        
+        forceClickConfirm()
+        attempts = attempts + 1
     end
 
     if isSecurity(localPlayer) then
-        Rayfield:Notify({Title = "Security", Content = "Joined Security team!", Duration = 4})
+        Rayfield:Notify({Title = "Security", Content = "Successfully joined Security team!", Duration = 4})
         return true
     end
+    
+    Rayfield:Notify({Title = "Error", Content = "Failed to join Security. Try clicking manually.", Duration = 4})
     return false
 end
 
@@ -306,34 +281,6 @@ joinSecurityTeam = function()
     local ok = joinSecurityPad()
     isJoiningSecurity = false
     return ok
-end
-
--- ═══════════════════════════════════════════════════════════
---  LinearVelocity Surf Components
--- ═══════════════════════════════════════════════════════════
-local activeMover = nil
-local activeAttachment = nil
-
-local function clearFlightMovers()
-    if activeMover then activeMover:Destroy(); activeMover = nil end
-    if activeAttachment then activeAttachment:Destroy(); activeAttachment = nil end
-    resetFlightState()
-end
-
-local function setupFlightMovers(rootPart)
-    clearFlightMovers()
-    
-    activeAttachment = Instance.new("Attachment")
-    activeAttachment.Name = "FlightAtt"
-    activeAttachment.Parent = rootPart
-
-    activeMover = Instance.new("LinearVelocity")
-    activeMover.Name = "FlightMover"
-    activeMover.Attachment0 = activeAttachment
-    activeMover.MaxForce = math.huge
-    activeMover.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
-    activeMover.RelativeTo = Enum.ActuatorRelativeTo.World
-    activeMover.Parent = rootPart
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -378,7 +325,7 @@ local function getClosestOutlaw()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Tracking Controller (Homing Missile Logic)
+--  Tracking Controller (Reliable CFrame Surf)
 -- ═══════════════════════════════════════════════════════════
 local trackingTarget, trackingActive = nil, false
 local trackingConnection = nil
@@ -388,16 +335,15 @@ local function startTracking(target)
     trackingActive = true
     
     local char = localPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    
-    setupFlightMovers(root)
-    prepareFlightState()
+    local humanoid = char and char:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = true -- Prevents server from triggering walking/falling physics bugs
+    end
 
-    trackingConnection = RunService.Heartbeat:Connect(function()
+    trackingConnection = RunService.Stepped:Connect(function()
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
-            clearFlightMovers()
+            if humanoid then humanoid.PlatformStand = false end
             if trackingConnection then 
                 trackingConnection:Disconnect() 
                 trackingConnection = nil
@@ -405,52 +351,49 @@ local function startTracking(target)
             return
         end
         
-        prepareFlightState() -- Keep state active
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        
+        -- Disable Collisions
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
         
         if trackingTarget.Character then
-            local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
-            local humanoid = trackingTarget.Character:FindFirstChild("Humanoid")
+            local targetRP = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
+            local targetHum = trackingTarget.Character:FindFirstChild("Humanoid")
             
-            local targetPartToFollow = rp
+            local targetPartToFollow = targetRP
             local targetVelocity = Vector3.zero
             
-            -- Vehicle Override
-            if humanoid and humanoid.SeatPart then
-                local vehicle = humanoid.SeatPart:FindFirstAncestorWhichIsA("Model")
+            -- Vehicle Override: Track the car, not the player
+            if targetHum and targetHum.SeatPart then
+                local vehicle = targetHum.SeatPart:FindFirstAncestorWhichIsA("Model")
                 if vehicle and vehicle.PrimaryPart then
                     targetPartToFollow = vehicle.PrimaryPart
                 end
-                targetVelocity = humanoid.SeatPart.AssemblyLinearVelocity
-            elseif rp then
-                targetVelocity = rp.AssemblyLinearVelocity
+                targetVelocity = targetHum.SeatPart.AssemblyLinearVelocity
+            elseif targetRP then
+                targetVelocity = targetRP.AssemblyLinearVelocity
             end
             
-            if targetPartToFollow and root then
+            if targetPartToFollow then
                 local targetPos = targetPartToFollow.Position
+                
+                -- Attempt memory read for zero-latency position
                 if memory_read then
                     local cf = read_cframe(targetPartToFollow)
                     if cf then targetPos = cf.pos end
                 end
                 
-                local myPos = root.Position
-                local goalPos = targetPos + Vector3.new(0, getYOffset(), 0)
-                local distanceToGoal = (goalPos - myPos).Magnitude
+                -- Add Y offset to stay hovering above them (stops anti-cheat from blocking the arrest timer)
+                local offsetPos = targetPos + Vector3.new(0, math.max(getYOffset(), 2), 0)
                 
-                -- Anti-Failsafe: If we are ridiculously far away, snap close to them so we don't fly across the map
-                if distanceToGoal > 50 then
-                    char:PivotTo(CFrame.new(goalPos))
-                else
-                    -- PD Controller Math: Target Speed + Proportional gap-closer
-                    local direction = (goalPos - myPos)
-                    local approachSpeed = 15 -- Adjusts how aggressively we snap into position
-                    
-                    if activeMover then
-                        activeMover.VectorVelocity = targetVelocity + (direction * approachSpeed)
-                    end
-                end
-                
-                -- Force rotation to match so our character faces forward
-                root.CFrame = CFrame.new(root.Position, root.Position + targetPartToFollow.CFrame.LookVector)
+                -- Apply exact position and match their velocity so the server sees us moving together
+                root.CFrame = CFrame.new(offsetPos, offsetPos + targetPartToFollow.CFrame.LookVector)
+                root.AssemblyLinearVelocity = targetVelocity
             end
         end
     end)
@@ -459,7 +402,9 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
-    clearFlightMovers()
+    if localPlayer.Character and localPlayer.Character:FindFirstChild("Humanoid") then
+        localPlayer.Character.Humanoid.PlatformStand = false
+    end
     if trackingConnection then
         trackingConnection:Disconnect()
         trackingConnection = nil
