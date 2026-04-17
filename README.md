@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Reliable CFrame Surf + Fixed Team Join)
+-- Standalone Auto Arrest Script (Robust Root Finding & Error Prevention)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Reliable CFrame Tracking",
+   LoadingSubtitle = "Robust Tracking Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -92,7 +92,7 @@ function UI.AddTab(tabName, callback)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Memory Helpers (For Scanning Only)
+--  Memory & Helper Functions
 -- ═══════════════════════════════════════════════════════════
 local offsets = {
     base_part = { primitive = 0x148 },
@@ -125,6 +125,15 @@ local function read_cframe(part)
         rot = read_rotation(prim + offsets.primitive.cframe),
         pos = read_fvector3(prim, offsets.primitive.cframe + 0x24),
     }
+end
+
+-- Robust Root Part Finder (Fixes "No base root found" errors)
+local function getRootPart(char)
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart") 
+        or char.PrimaryPart 
+        or char:FindFirstChild("UpperTorso") 
+        or char:FindFirstChild("Torso")
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -180,19 +189,17 @@ UI.AddTab("Auto Arrest", function(tab)
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
     settings:SliderInt("oh_offset", "Y Offset (Height)", 0, 15, 4)
-    settings:Tip("Keep this above 0. Teleporting inside cars breaks the timer.")
+    settings:Tip("Keep this above 0 to prevent glitching inside cars.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  FIXED: Pad Join Logic
+--  Fixed Pad Join Logic
 -- ═══════════════════════════════════════════════════════════
 local function forceClickConfirm()
-    -- Aggressively search for the Confirm button
     local promptUI = localPlayer.PlayerGui:FindFirstChild("PromptUI")
     if promptUI then
         local confirmBtn = promptUI:FindFirstChild("Confirm", true)
         if confirmBtn and confirmBtn:IsA("GuiButton") then
-            -- Method 1: GetConnections
             if getconnections then
                 for _, conn in ipairs(getconnections(confirmBtn.MouseButton1Click)) do
                     pcall(function() conn:Fire() end)
@@ -201,21 +208,9 @@ local function forceClickConfirm()
                     pcall(function() conn:Fire() end)
                 end
             end
-            
-            -- Method 2: firesignal
             if firesignal then
                 pcall(function() firesignal(confirmBtn.MouseButton1Click) end)
             end
-            
-            -- Method 3: Virtual Input (Center of button)
-            local absPos = confirmBtn.AbsolutePosition
-            local absSize = confirmBtn.AbsoluteSize
-            local x = absPos.X + (absSize.X / 2)
-            local y = absPos.Y + (absSize.Y / 2)
-            VirtualInputManager:SendMouseButtonEvent(x, y + 36, 0, true, game, 1) -- +36 for topbar offset
-            task.wait(0.05)
-            VirtualInputManager:SendMouseButtonEvent(x, y + 36, 0, false, game, 1)
-            
             return true
         end
     end
@@ -227,9 +222,12 @@ local function joinSecurityPad()
     
     local function tpToPad(cf)
         local char = localPlayer.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then
-            char:PivotTo(cf)
-            char.HumanoidRootPart.AssemblyLinearVelocity = Vector3.zero
+        if char then
+            local root = getRootPart(char)
+            if root then
+                char:PivotTo(cf)
+                root.AssemblyLinearVelocity = Vector3.zero
+            end
         end
     end
 
@@ -250,12 +248,17 @@ local function joinSecurityPad()
         tpToPad(targetCF)
         task.wait(0.2)
         
-        -- Fire any proximity prompts just in case DE changed it
-        for _, prompt in ipairs(Workspace:GetDescendants()) do
-            if prompt:IsA("ProximityPrompt") and prompt.Enabled then
-                local dist = (prompt.Parent.Position - localPlayer.Character.HumanoidRootPart.Position).Magnitude
-                if dist < 10 then
-                    fireproximityprompt(prompt)
+        local char = localPlayer.Character
+        local root = getRootPart(char)
+        if root then
+            for _, prompt in ipairs(Workspace:GetDescendants()) do
+                if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                    if prompt.Parent and prompt.Parent:IsA("BasePart") then
+                        local dist = (prompt.Parent.Position - root.Position).Magnitude
+                        if dist < 10 then
+                            pcall(function() fireproximityprompt(prompt) end)
+                        end
+                    end
                 end
             end
         end
@@ -269,7 +272,7 @@ local function joinSecurityPad()
         return true
     end
     
-    Rayfield:Notify({Title = "Error", Content = "Failed to join Security. Try clicking manually.", Duration = 4})
+    Rayfield:Notify({Title = "Error", Content = "Failed to join Security.", Duration = 4})
     return false
 end
 
@@ -305,10 +308,14 @@ local function getOutlaws()
 end
 
 local function getClosestOutlaw()
-    local myPos = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") and localPlayer.Character.HumanoidRootPart.Position
+    local myRoot = getRootPart(localPlayer.Character)
+    local myPos = myRoot and myRoot.Position
+    
     local closest, closestDist = nil, math.huge
     for _, outlaw in ipairs(getOutlaws()) do
-        local pos = (outlaw.Character and outlaw.Character:FindFirstChild("HumanoidRootPart") and outlaw.Character.HumanoidRootPart.Position)
+        local outlawRoot = getRootPart(outlaw.Character)
+        local pos = outlawRoot and outlawRoot.Position
+        
         if pos then
             if myPos then
                 local dist = (myPos - pos).Magnitude
@@ -337,13 +344,13 @@ local function startTracking(target)
     local char = localPlayer.Character
     local humanoid = char and char:FindFirstChild("Humanoid")
     if humanoid then
-        humanoid.PlatformStand = true -- Prevents server from triggering walking/falling physics bugs
+        humanoid.PlatformStand = true 
     end
 
     trackingConnection = RunService.Stepped:Connect(function()
-        if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
+        if not trackingActive or not trackingTarget or not trackingTarget.Parent or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
-            if humanoid then humanoid.PlatformStand = false end
+            if humanoid then pcall(function() humanoid.PlatformStand = false end) end
             if trackingConnection then 
                 trackingConnection:Disconnect() 
                 trackingConnection = nil
@@ -351,10 +358,10 @@ local function startTracking(target)
             return
         end
         
-        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local root = getRootPart(char)
         if not root then return end
         
-        -- Disable Collisions
+        -- Safely Disable Collisions
         for _, part in ipairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CanCollide = false
@@ -362,13 +369,12 @@ local function startTracking(target)
         end
         
         if trackingTarget.Character then
-            local targetRP = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
+            local targetRP = getRootPart(trackingTarget.Character)
             local targetHum = trackingTarget.Character:FindFirstChild("Humanoid")
             
             local targetPartToFollow = targetRP
             local targetVelocity = Vector3.zero
             
-            -- Vehicle Override: Track the car, not the player
             if targetHum and targetHum.SeatPart then
                 local vehicle = targetHum.SeatPart:FindFirstAncestorWhichIsA("Model")
                 if vehicle and vehicle.PrimaryPart then
@@ -382,18 +388,18 @@ local function startTracking(target)
             if targetPartToFollow then
                 local targetPos = targetPartToFollow.Position
                 
-                -- Attempt memory read for zero-latency position
                 if memory_read then
                     local cf = read_cframe(targetPartToFollow)
                     if cf then targetPos = cf.pos end
                 end
                 
-                -- Add Y offset to stay hovering above them (stops anti-cheat from blocking the arrest timer)
                 local offsetPos = targetPos + Vector3.new(0, math.max(getYOffset(), 2), 0)
                 
-                -- Apply exact position and match their velocity so the server sees us moving together
-                root.CFrame = CFrame.new(offsetPos, offsetPos + targetPartToFollow.CFrame.LookVector)
-                root.AssemblyLinearVelocity = targetVelocity
+                -- Pcall prevents crash if part gets destroyed mid-frame
+                pcall(function()
+                    root.CFrame = CFrame.new(offsetPos, offsetPos + targetPartToFollow.CFrame.LookVector)
+                    root.AssemblyLinearVelocity = targetVelocity
+                end)
             end
         end
     end)
@@ -403,7 +409,7 @@ local function stopTracking()
     trackingActive = false
     trackingTarget = nil
     if localPlayer.Character and localPlayer.Character:FindFirstChild("Humanoid") then
-        localPlayer.Character.Humanoid.PlatformStand = false
+        pcall(function() localPlayer.Character.Humanoid.PlatformStand = false end)
     end
     if trackingConnection then
         trackingConnection:Disconnect()
@@ -444,7 +450,7 @@ task.spawn(function()
         if not target then task.wait(0.5) continue end
 
         local targetChar = target.Character
-        local rootPart = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+        local rootPart = getRootPart(targetChar)
         if not rootPart then
             task.wait(0.5)
             continue
