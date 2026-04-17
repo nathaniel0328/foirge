@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Ultimate Stepped Pivot Tracking, Vehicle Detection)
+-- Standalone Auto Arrest Script (Physics Constraint Tethering for Arrest Bar)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Ultimate Tracking Active",
+   LoadingSubtitle = "Physics Tethering Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -70,18 +70,6 @@ function UI.AddTab(tabName, callback)
             })
         end
         
-        function sectionObj:SliderFloat(id, name, min, max, default, format)
-            uiValues[id] = default
-            uiElements[id] = tab:CreateSlider({
-                Name = name,
-                Range = {min, max},
-                Increment = 0.05,
-                CurrentValue = default,
-                Flag = id,
-                Callback = function(val) uiValues[id] = val end
-            })
-        end
-        
         function sectionObj:Tip(text)
             tab:CreateLabel(text)
         end
@@ -92,7 +80,7 @@ function UI.AddTab(tabName, callback)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Memory & Offsets
+--  Memory Helpers (For Finding Outlaws Only)
 -- ═══════════════════════════════════════════════════════════
 local offsets = {
     base_part = { primitive = 0x148 },
@@ -108,13 +96,6 @@ local function read_fvector3(address, offset)
     )
 end
 
-local function write_fvector3(address, offset, vec)
-    if not memory_write then return end
-    memory_write("float", address + offset,       vec.X)
-    memory_write("float", address + offset + 0x4, vec.Y)
-    memory_write("float", address + offset + 0x8, vec.Z)
-end
-
 local function read_rotation(address)
     local r = {}
     if not memory_read then return r end
@@ -122,14 +103,6 @@ local function read_rotation(address)
         r[key] = memory_read("float", address + (i - 1) * 0x4)
     end
     return r
-end
-
-local function write_rotation(address, rotation)
-    if not memory_write then return end
-    local keys = {"r00","r01","r02","r10","r11","r12","r20","r21","r22"}
-    for i, key in ipairs(keys) do
-        memory_write("float", address + (i - 1) * 0x4, rotation[key])
-    end
 end
 
 local function read_cframe(part)
@@ -142,17 +115,6 @@ local function read_cframe(part)
     }
 end
 
-local function write_cframe(part, cframe)
-    if not part or not memory_write then return end
-    local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-    if prim == 0 then return end
-    write_rotation(prim + offsets.primitive.cframe, cframe.rot)
-    write_fvector3(prim, offsets.primitive.cframe + 0x24, cframe.pos)
-end
-
--- ═══════════════════════════════════════════════════════════
---  Mobile Helpers
--- ═══════════════════════════════════════════════════════════
 local function clickButton(button)
     if getconnections then
         for _, conn in ipairs(getconnections(button.MouseButton1Click)) do
@@ -190,7 +152,6 @@ end
 
 local function secEnabled() return UI.GetValue("oh_enabled") end
 local function getYOffset() return UI.GetValue("oh_offset") or -2 end
-local function getPrediction() return UI.GetValue("oh_predict") or 0.15 end
 local function getMinBounty() return UI.GetValue("oh_min_bounty") or 0 end
 
 local function getPlayerBounty(player)
@@ -220,54 +181,6 @@ local function disableCollisions()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Ultimate Teleport (Vehicle Detection + PivotTo)
--- ═══════════════════════════════════════════════════════════
-local function teleportToUltimate(targetPlayer, targetPart, predictionPing)
-    local character = localPlayer.Character
-    if not character then return end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-    
-    local targetPos = targetPart.Position
-    local targetRot = targetPart.CFrame.Rotation
-    local targetVelocity = targetPart.AssemblyLinearVelocity
-    
-    -- VEHICLE PHYSICS CHECK: Overrides player velocity with car velocity if seated
-    local humanoid = targetPlayer.Character and targetPlayer.Character:FindFirstChild("Humanoid")
-    if humanoid and humanoid.SeatPart then
-        local vehicle = humanoid.SeatPart:FindFirstAncestorWhichIsA("Model")
-        if vehicle and vehicle.PrimaryPart then
-            targetVelocity = vehicle.PrimaryPart.AssemblyLinearVelocity
-        else
-            targetVelocity = humanoid.SeatPart.AssemblyLinearVelocity
-        end
-    end
-    
-    if memory_read then
-        local cf = read_cframe(targetPart)
-        if cf then targetPos = cf.pos end
-    end
-    
-    -- Future Prediction Calculation
-    local predictedPos = targetPos + (targetVelocity * predictionPing)
-    local offsetCFrame = CFrame.new(0, getYOffset(), 0)
-    local finalCFrame = CFrame.new(predictedPos) * targetRot * offsetCFrame
-    
-    -- Memory Write for visual latency fixing
-    if memory_read and memory_write then
-        local mySourceCFrame = read_cframe(rootPart)
-        if mySourceCFrame then
-            mySourceCFrame.pos = finalCFrame.Position
-            write_cframe(rootPart, mySourceCFrame)
-        end
-    end
-    
-    -- PivotTo moves the entire character instantly without tearing joints
-    character:PivotTo(finalCFrame)
-    rootPart.AssemblyLinearVelocity = targetVelocity 
-end
-
--- ═══════════════════════════════════════════════════════════
 --  UI Building
 -- ═══════════════════════════════════════════════════════════
 UI.AddTab("Auto Arrest", function(tab)
@@ -284,10 +197,8 @@ UI.AddTab("Auto Arrest", function(tab)
 
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
-    
     settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
-    settings:SliderFloat("oh_predict", "Prediction Ping (s)", 0.0, 0.5, 0.15)
-    settings:Tip("Calculates car velocity and pivots your assembly.")
+    settings:Tip("Uses physics tethers to ensure the arrest bar fills smoothly.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -366,7 +277,56 @@ joinSecurityTeam = function()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Outlaw Tracking Logic
+--  Physics Constraint Tracking System
+-- ═══════════════════════════════════════════════════════════
+local activeConstraints = {}
+
+local function clearConstraints()
+    for _, obj in ipairs(activeConstraints) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    table.clear(activeConstraints)
+end
+
+local function applyPhysicsTether(targetPart)
+    local char = localPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    clearConstraints()
+
+    -- 1. My Attachment
+    local att0 = Instance.new("Attachment")
+    att0.Name = "ArrestAtt0"
+    att0.Parent = root
+    table.insert(activeConstraints, att0)
+
+    -- 2. Their Attachment (with the offset)
+    local att1 = Instance.new("Attachment")
+    att1.Name = "ArrestAtt1"
+    att1.Position = Vector3.new(0, getYOffset(), 0)
+    att1.Parent = targetPart
+    table.insert(activeConstraints, att1)
+
+    -- 3. The physics glue that pulls us to them smoothly
+    local alignPos = Instance.new("AlignPosition")
+    alignPos.Attachment0 = att0
+    alignPos.Attachment1 = att1
+    alignPos.RigidityEnabled = true -- This forces instant physics snapping
+    alignPos.Parent = root
+    table.insert(activeConstraints, alignPos)
+
+    -- 4. Keep our rotation matching theirs so we don't spin wildly
+    local alignOri = Instance.new("AlignOrientation")
+    alignOri.Attachment0 = att0
+    alignOri.Attachment1 = att1
+    alignOri.RigidityEnabled = true
+    alignOri.Parent = root
+    table.insert(activeConstraints, alignOri)
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  Outlaw Finding Logic
 -- ═══════════════════════════════════════════════════════════
 local function getOutlaws()
     local outlaws = {}
@@ -386,34 +346,14 @@ local function getOutlaws()
     return outlaws
 end
 
-local function getPositionFromMemory(player)
-    if not memory_read then return nil end
-    local char = player.Character
-    if not char then return nil end
-    for _, name in ipairs({"HumanoidRootPart", "UpperTorso", "LowerTorso", "Head"}) do
-        local part = char:FindFirstChild(name)
-        if part and part.Address and part.Address ~= 0 then
-            local prim = memory_read("uintptr", part.Address + offsets.base_part.primitive)
-            if prim and prim ~= 0 then
-                local x = memory_read("float", prim + offsets.primitive.cframe + 0x24)
-                local y = memory_read("float", prim + offsets.primitive.cframe + 0x28)
-                local z = memory_read("float", prim + offsets.primitive.cframe + 0x2C)
-                if x and y and z then return Vector3.new(x, y, z) end
-            end
-        end
-    end
-    return nil
-end
-
 local function getClosestOutlaw()
     local myPos = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart") and localPlayer.Character.HumanoidRootPart.Position
     local closest, closestDist = nil, math.huge
     for _, outlaw in ipairs(getOutlaws()) do
-        local pos = getPositionFromMemory(outlaw) or (outlaw.Character and outlaw.Character:FindFirstChild("HumanoidRootPart") and outlaw.Character.HumanoidRootPart.Position)
+        local pos = (outlaw.Character and outlaw.Character:FindFirstChild("HumanoidRootPart") and outlaw.Character.HumanoidRootPart.Position)
         if pos then
             if myPos then
-                local dx, dy, dz = myPos.X - pos.X, myPos.Y - pos.Y, myPos.Z - pos.Z
-                local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                local dist = (myPos - pos).Magnitude
                 if dist < closestDist then
                     closestDist = dist
                     closest = outlaw
@@ -426,18 +366,26 @@ local function getClosestOutlaw()
     return closest
 end
 
+-- ═══════════════════════════════════════════════════════════
+--  Tracking Controller
+-- ═══════════════════════════════════════════════════════════
 local trackingTarget, trackingActive = nil, false
 local trackingConnection = nil
+local currentTetheredPart = nil
 
 local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Changed from Heartbeat to Stepped. Stepped runs BEFORE physics calculate.
-    -- This means the engine won't try to bounce you out of the car before teleporting you back in.
-    trackingConnection = RunService.Stepped:Connect(function()
+    -- Teleport close first to avoid physics fling
+    if target.Character and target.Character:FindFirstChild("HumanoidRootPart") and localPlayer.Character then
+        localPlayer.Character:PivotTo(target.Character.HumanoidRootPart.CFrame)
+    end
+    
+    trackingConnection = RunService.Heartbeat:Connect(function()
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
+            clearConstraints()
             if trackingConnection then 
                 trackingConnection:Disconnect() 
                 trackingConnection = nil
@@ -445,12 +393,33 @@ local function startTracking(target)
             return
         end
         
-        disableCollisions()
+        disableCollisions() -- MUST keep off or you will bounce off their car
         
         if trackingTarget.Character then
             local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
-            if rp then
-                teleportToUltimate(trackingTarget, rp, getPrediction())
+            local humanoid = trackingTarget.Character:FindFirstChild("Humanoid")
+            
+            local targetPartToStickTo = rp
+            
+            -- If they are in a car, we must tether to the car's primary part, not them directly.
+            if humanoid and humanoid.SeatPart then
+                local vehicle = humanoid.SeatPart:FindFirstAncestorWhichIsA("Model")
+                if vehicle and vehicle.PrimaryPart then
+                    targetPartToStickTo = vehicle.PrimaryPart
+                end
+            end
+            
+            -- If they switch vehicles or respawn, re-apply the tethers to the new part
+            if targetPartToStickTo and targetPartToStickTo ~= currentTetheredPart then
+                currentTetheredPart = targetPartToStickTo
+                applyPhysicsTether(currentTetheredPart)
+            end
+            
+            -- Dynamic offset adjustment if slider changes while tracking
+            for _, obj in ipairs(activeConstraints) do
+                if obj.Name == "ArrestAtt1" then
+                    obj.Position = Vector3.new(0, getYOffset(), 0)
+                end
             end
         end
     end)
@@ -459,6 +428,8 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
+    currentTetheredPart = nil
+    clearConstraints()
     if trackingConnection then
         trackingConnection:Disconnect()
         trackingConnection = nil
