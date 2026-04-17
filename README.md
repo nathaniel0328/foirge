@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Robust Root Finding & Error Prevention)
+-- Standalone Auto Arrest Script (Seamless Target Switching & Reliable Surf)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Robust Tracking Active",
+   LoadingSubtitle = "Seamless Switching Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -127,7 +127,7 @@ local function read_cframe(part)
     }
 end
 
--- Robust Root Part Finder (Fixes "No base root found" errors)
+-- Robust Root Part Finder
 local function getRootPart(char)
     if not char then return nil end
     return char:FindFirstChild("HumanoidRootPart") 
@@ -296,6 +296,7 @@ local function getOutlaws()
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= localPlayer and isOutlaw(player) then
+            -- Exclude players currently on the temporary blacklist
             if targetBlacklist[player.UserId] and currentTime < targetBlacklist[player.UserId] then
                 continue 
             end
@@ -408,77 +409,12 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
-    if localPlayer.Character and localPlayer.Character:FindFirstChild("Humanoid") then
-        pcall(function() localPlayer.Character.Humanoid.PlatformStand = false end)
-    end
-    if trackingConnection then
-        trackingConnection:Disconnect()
-        trackingConnection = nil
-    end
-end
-
--- ═══════════════════════════════════════════════════════════
---  Main Execution Loop
--- ═══════════════════════════════════════════════════════════
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if secEnabled() and not isSecurity(localPlayer) and not isJoiningSecurity then
-            joinSecurityTeam()
+    
+    if localPlayer.Character then
+        local root = getRootPart(localPlayer.Character)
+        if root then 
+            -- Stop flying off when we finish tracking someone
+            root.AssemblyLinearVelocity = Vector3.zero 
         end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if not secEnabled() then
-            stopTracking()
-            task.wait(0.2)
-            continue
-        end
-
-        stopTracking()
-        manualSkipFlag = false
-
-        local outlaws = getOutlaws()
-        if #outlaws == 0 then
-            while #getOutlaws() == 0 do task.wait(1) end
-            continue
-        end
-
-        local target = getClosestOutlaw()
-        if not target then task.wait(0.5) continue end
-
-        local targetChar = target.Character
-        local rootPart = getRootPart(targetChar)
-        if not rootPart then
-            task.wait(0.5)
-            continue
-        end
-
-        startTracking(target)
-
-        while isOutlaw(target) and target.Character == targetChar do
-            if not secEnabled() then break end
-            if manualSkipFlag then break end
-            
-            local currentBounty = getPlayerBounty(target)
-            if currentBounty == 0 or currentBounty < getMinBounty() then
-                break
-            end
-            
-            task.wait(0.1)
-        end
-
-        if manualSkipFlag then
-            if target and isOutlaw(target) then
-                Rayfield:Notify({Title = "Auto Arrest", Content = "Manually Skipped " .. target.Name, Duration = 3})
-                targetBlacklist[target.UserId] = os.clock() + 30 
-            end
-        end
-
-        manualSkipFlag = false
-        stopTracking()
-        task.wait(0.1)
-    end
-end)
+        
+        local humanoid = localPlayer.Character:FindFirstChild
