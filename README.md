@@ -1,5 +1,5 @@
 -- DrivingEmpire.lua
--- Standalone Auto Arrest Script (Physics Constraint Tethering for Arrest Bar)
+-- Standalone Auto Arrest Script (LinearVelocity Homing Surf Method)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -26,7 +26,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
    Name = "Auto Arrest Pro",
    LoadingTitle = "Loading Script...",
-   LoadingSubtitle = "Physics Tethering Active",
+   LoadingSubtitle = "Velocity Surf Active",
    ConfigurationSaving = { 
        Enabled = true,
        FolderName = "AutoArrestDE",
@@ -70,6 +70,18 @@ function UI.AddTab(tabName, callback)
             })
         end
         
+        function sectionObj:SliderFloat(id, name, min, max, default, format)
+            uiValues[id] = default
+            uiElements[id] = tab:CreateSlider({
+                Name = name,
+                Range = {min, max},
+                Increment = 0.05,
+                CurrentValue = default,
+                Flag = id,
+                Callback = function(val) uiValues[id] = val end
+            })
+        end
+        
         function sectionObj:Tip(text)
             tab:CreateLabel(text)
         end
@@ -80,7 +92,7 @@ function UI.AddTab(tabName, callback)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Memory Helpers (For Finding Outlaws Only)
+--  Memory Helpers (For Scanning Only)
 -- ═══════════════════════════════════════════════════════════
 local offsets = {
     base_part = { primitive = 0x148 },
@@ -169,12 +181,32 @@ local function getPlayerBounty(player)
     return bounty
 end
 
-local function disableCollisions()
+local function prepareFlightState()
     local char = localPlayer.Character
     if char then
+        local humanoid = char:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = true -- Prevents tripping or trying to walk
+        end
         for _, part in ipairs(char:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CanCollide = false
+                part.Massless = true -- Makes us weightless for perfect flight
+            end
+        end
+    end
+end
+
+local function resetFlightState()
+    local char = localPlayer.Character
+    if char then
+        local humanoid = char:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = false
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                part.Massless = false
             end
         end
     end
@@ -198,7 +230,7 @@ UI.AddTab("Auto Arrest", function(tab)
     local settings = tab:Section("Settings", "Right")
     settings:SliderInt("oh_min_bounty", "Min Bounty", 0, 50000, 0)
     settings:SliderInt("oh_offset", "Static Y Offset", -10, 10, -2)
-    settings:Tip("Uses physics tethers to ensure the arrest bar fills smoothly.")
+    settings:Tip("Uses Velocity Surfing (Flight) to match target speed.")
 end)
 
 -- ═══════════════════════════════════════════════════════════
@@ -277,52 +309,31 @@ joinSecurityTeam = function()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Physics Constraint Tracking System
+--  LinearVelocity Surf Components
 -- ═══════════════════════════════════════════════════════════
-local activeConstraints = {}
+local activeMover = nil
+local activeAttachment = nil
 
-local function clearConstraints()
-    for _, obj in ipairs(activeConstraints) do
-        if obj and obj.Parent then obj:Destroy() end
-    end
-    table.clear(activeConstraints)
+local function clearFlightMovers()
+    if activeMover then activeMover:Destroy(); activeMover = nil end
+    if activeAttachment then activeAttachment:Destroy(); activeAttachment = nil end
+    resetFlightState()
 end
 
-local function applyPhysicsTether(targetPart)
-    local char = localPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
+local function setupFlightMovers(rootPart)
+    clearFlightMovers()
+    
+    activeAttachment = Instance.new("Attachment")
+    activeAttachment.Name = "FlightAtt"
+    activeAttachment.Parent = rootPart
 
-    clearConstraints()
-
-    -- 1. My Attachment
-    local att0 = Instance.new("Attachment")
-    att0.Name = "ArrestAtt0"
-    att0.Parent = root
-    table.insert(activeConstraints, att0)
-
-    -- 2. Their Attachment (with the offset)
-    local att1 = Instance.new("Attachment")
-    att1.Name = "ArrestAtt1"
-    att1.Position = Vector3.new(0, getYOffset(), 0)
-    att1.Parent = targetPart
-    table.insert(activeConstraints, att1)
-
-    -- 3. The physics glue that pulls us to them smoothly
-    local alignPos = Instance.new("AlignPosition")
-    alignPos.Attachment0 = att0
-    alignPos.Attachment1 = att1
-    alignPos.RigidityEnabled = true -- This forces instant physics snapping
-    alignPos.Parent = root
-    table.insert(activeConstraints, alignPos)
-
-    -- 4. Keep our rotation matching theirs so we don't spin wildly
-    local alignOri = Instance.new("AlignOrientation")
-    alignOri.Attachment0 = att0
-    alignOri.Attachment1 = att1
-    alignOri.RigidityEnabled = true
-    alignOri.Parent = root
-    table.insert(activeConstraints, alignOri)
+    activeMover = Instance.new("LinearVelocity")
+    activeMover.Name = "FlightMover"
+    activeMover.Attachment0 = activeAttachment
+    activeMover.MaxForce = math.huge
+    activeMover.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    activeMover.RelativeTo = Enum.ActuatorRelativeTo.World
+    activeMover.Parent = rootPart
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -367,25 +378,26 @@ local function getClosestOutlaw()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  Tracking Controller
+--  Tracking Controller (Homing Missile Logic)
 -- ═══════════════════════════════════════════════════════════
 local trackingTarget, trackingActive = nil, false
 local trackingConnection = nil
-local currentTetheredPart = nil
 
 local function startTracking(target)
     trackingTarget = target
     trackingActive = true
     
-    -- Teleport close first to avoid physics fling
-    if target.Character and target.Character:FindFirstChild("HumanoidRootPart") and localPlayer.Character then
-        localPlayer.Character:PivotTo(target.Character.HumanoidRootPart.CFrame)
-    end
+    local char = localPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
     
+    setupFlightMovers(root)
+    prepareFlightState()
+
     trackingConnection = RunService.Heartbeat:Connect(function()
         if not trackingActive or not isOutlaw(trackingTarget) or not secEnabled() then
             trackingActive = false
-            clearConstraints()
+            clearFlightMovers()
             if trackingConnection then 
                 trackingConnection:Disconnect() 
                 trackingConnection = nil
@@ -393,33 +405,52 @@ local function startTracking(target)
             return
         end
         
-        disableCollisions() -- MUST keep off or you will bounce off their car
+        prepareFlightState() -- Keep state active
         
         if trackingTarget.Character then
             local rp = trackingTarget.Character:FindFirstChild("HumanoidRootPart")
             local humanoid = trackingTarget.Character:FindFirstChild("Humanoid")
             
-            local targetPartToStickTo = rp
+            local targetPartToFollow = rp
+            local targetVelocity = Vector3.zero
             
-            -- If they are in a car, we must tether to the car's primary part, not them directly.
+            -- Vehicle Override
             if humanoid and humanoid.SeatPart then
                 local vehicle = humanoid.SeatPart:FindFirstAncestorWhichIsA("Model")
                 if vehicle and vehicle.PrimaryPart then
-                    targetPartToStickTo = vehicle.PrimaryPart
+                    targetPartToFollow = vehicle.PrimaryPart
                 end
+                targetVelocity = humanoid.SeatPart.AssemblyLinearVelocity
+            elseif rp then
+                targetVelocity = rp.AssemblyLinearVelocity
             end
             
-            -- If they switch vehicles or respawn, re-apply the tethers to the new part
-            if targetPartToStickTo and targetPartToStickTo ~= currentTetheredPart then
-                currentTetheredPart = targetPartToStickTo
-                applyPhysicsTether(currentTetheredPart)
-            end
-            
-            -- Dynamic offset adjustment if slider changes while tracking
-            for _, obj in ipairs(activeConstraints) do
-                if obj.Name == "ArrestAtt1" then
-                    obj.Position = Vector3.new(0, getYOffset(), 0)
+            if targetPartToFollow and root then
+                local targetPos = targetPartToFollow.Position
+                if memory_read then
+                    local cf = read_cframe(targetPartToFollow)
+                    if cf then targetPos = cf.pos end
                 end
+                
+                local myPos = root.Position
+                local goalPos = targetPos + Vector3.new(0, getYOffset(), 0)
+                local distanceToGoal = (goalPos - myPos).Magnitude
+                
+                -- Anti-Failsafe: If we are ridiculously far away, snap close to them so we don't fly across the map
+                if distanceToGoal > 50 then
+                    char:PivotTo(CFrame.new(goalPos))
+                else
+                    -- PD Controller Math: Target Speed + Proportional gap-closer
+                    local direction = (goalPos - myPos)
+                    local approachSpeed = 15 -- Adjusts how aggressively we snap into position
+                    
+                    if activeMover then
+                        activeMover.VectorVelocity = targetVelocity + (direction * approachSpeed)
+                    end
+                end
+                
+                -- Force rotation to match so our character faces forward
+                root.CFrame = CFrame.new(root.Position, root.Position + targetPartToFollow.CFrame.LookVector)
             end
         end
     end)
@@ -428,8 +459,7 @@ end
 local function stopTracking()
     trackingActive = false
     trackingTarget = nil
-    currentTetheredPart = nil
-    clearConstraints()
+    clearFlightMovers()
     if trackingConnection then
         trackingConnection:Disconnect()
         trackingConnection = nil
